@@ -1,7 +1,10 @@
-(import (clos user) (maquette tables))
+(import (clos user) (maquette tables) (maquette query))
 
 (define-class <address> ()
-  ((id :init-keyword :id :primary-key #t)
+  ((id :init-keyword :id :primary-key #t
+       ;; for testing, we use SQLite3 which doesn't have sequence or stored
+       ;; procedure. so make it like this...
+       :generator (maquette-generator "insert into address_seq (id) values ((select max(id)+1 from address_seq)); select id from address_seq;"))
    (city :init-keyword :city :sql-type 'varchar :not-null? #t))
   :metaclass <maquette-table-meta>)
 

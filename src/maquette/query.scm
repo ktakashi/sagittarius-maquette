@@ -34,6 +34,7 @@
 	    ;;maquette-update
 	    ;;maquette-delete
 
+	    maquette-generator
 	    ;; for testing
 	    maquette-build-create-statement
 	    maquette-build-select-statement
@@ -160,6 +161,25 @@
 	;; not to close prepared statement.
 	(dbi-close q)
 	r))))
+
+(define (maquette-generator expression)
+  (define sqls 
+    (let ((in (open-string-input-port expression)))
+      (let loop ((r '()))
+	(let ((sql (read-sql in)))
+	  (if (eof-object? sql)
+	      (reverse! r)
+	      (loop (cons sql r)))))))
+  (lambda (conn)
+    (let loop ((sqls sqls))
+      (if (null? (cdr sqls))
+	  (let* ((q (dbi-execute-query-using-connection! conn (car sqls)))
+		 (v (dbi-fetch! q)))
+	    (dbi-close q)
+	    (vector-ref v 0))
+	  (begin
+	    (dbi-execute-using-connection! conn (car sqls))
+	    (loop (cdr sqls)))))))
 
 ;; insertion can be done with object without class.
 (define (maquette-insert conn object)

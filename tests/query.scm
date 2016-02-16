@@ -59,7 +59,7 @@
   (test-equal "maquette-insert" 1
 	      (maquette-insert conn (make <person> :id 1 :first-names "Takashi"
 					  :last-name "Kato"
-					  :addredd (make <address> :id 1
+					  :addredd (make <address>
 							 :city "Leiden"))))
 
 
