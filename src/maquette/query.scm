@@ -37,6 +37,7 @@
 	    ;; for testing
 	    maquette-build-create-statement
 	    maquette-build-select-statement
+	    maquette-build-insert-statement
 	    )
     (import (rnrs)
 	    (sagittarius) ;; for reverse!
@@ -45,7 +46,8 @@
 	    (dbi)
 	    (maquette tables)
 	    (text sql)
-	    (match))
+	    (match)
+	    (srfi :1))
 ;; query = dbi query
 ;; this is an internal procedure to map query 
 ;; 
@@ -135,6 +137,13 @@
 	   ;; TODO condition
 	   ,@(if condition '() ())))
 
+(define (maquette-build-insert-statement class columns)
+  (let ((cols (if (null? columns)
+		  (map car (maquette-table-columns class))
+		  columns)))
+    `(insert-into ,(maquette-table-name class)
+		  ,cols
+		  (values ,(list-tabulate (length cols) (lambda (i) '?))))))
 ;; call dbi-bind-parameter!
 (define (apply-condition stmt condition) #f)
 
@@ -155,6 +164,89 @@
 ;; insertion can be done with object without class.
 (define (maquette-insert conn object)
   (define class (class-of object))
-  #t)
+  (define slots (class-slots class))
+  (define specifications (maquette-table-column-specifications class))
+
+  (define (find-primary-spec spec)
+    (let loop ((spec spec))
+      (cond ((null? spec) #f)
+	    ((assq :primary-key (cdddr (car spec))) (car spec))
+	    (else (loop (cdr spec))))))
+  ;; need this
+  (define primary-key (find-primary-spec specifications))
+
+  (define (generate-next-id object primary-key)
+    (define generator (assq :generator (cddr primary-key)))
+    (cond ((not (slot-bound? object (cadr primary-key)))
+	   (if generator
+	       ((cdr generator) conn)
+	       (error 'maquette-insert 
+		      "primary key slot is unbound but no :generator" object)))
+	  ;; then you need to set manually
+	  ;; otherwise unbound slot error
+	  (else 
+	   (if generator
+	       (error 'maquette-insert
+		      ":generator is specified but slot is set" object)
+	       (slot-ref object (cadr primary-key))))))
+
+  (define (handle-slots object slots)
+    (define (find-primary-key o)
+      (define class (class-of o))
+      (define spec (maquette-table-column-specifications class))
+      (cond ((find-primary-spec spec) => (lambda (spec) (cadr spec)))
+	    (else #f)))
+
+    (define (handle-slot slot)
+      (and-let* ((slot-name (slot-definition-name slot))
+		 ( (slot-bound? object slot-name) )
+		 (o (slot-ref object slot-name))
+		 (spec (maquette-lookup-column-specification class slot-name)))
+	(cond ((is-a? (class-of o) <maquette-table-meta>)
+	       ;; ok it's nested class insert if nessessary
+	       ;; if this is foreign-key then we need to check
+	       ;; the reference columns are filled
+	       (cond ((assq :foreign-key (cdddr spec)) =>
+		      (lambda (slot)
+			(let ((fkey (cadr slot)))
+			  (unless (slot-bound? o (cadr fkey))
+			    (maquette-insert conn o))
+			  ;; return the inserting value
+			  `(,(car spec) . ,(slot-ref o (cadr fkey))))))
+		     ((find-primary-key o) =>
+		      (lambda (slot)
+			(unless (slot-bound? o slot)
+			  (maquette-insert conn o))
+			;; return the interting value
+			`(,(car spec) . ,(slot-ref o slot))))
+		     (else
+		      (error 'maquette-insert 
+			     "Object doesn't have foreign-key nor primary key"
+			     o))))
+	      ((pair? o)   (error 'maquette-insert "not supported yet" o))
+	      ((vector? o) (error 'maquette-insert "not supported yet" o))
+	      ;; must be something bindable
+	      (else `(,(car spec) . ,o)))))
+    (filter-map handle-slot slots))
+
+  (unless primary-key 
+    (error 'maquette-insert 
+	   "The class of the inserting object doesn't have primary key"
+	   class))
+
+  (and-let* ((id (generate-next-id object primary-key))
+	     (col&vals (cons (cons (cadr primary-key) id)
+			     (handle-slots object slots)))
+	     (ssql (maquette-build-insert-statement class (map car col&vals)))
+	     (stmt (dbi-prepare conn (ssql->sql ssql))))
+    ;; bind parameter
+    (let loop ((i 1) (col&vals col&vals))
+      (unless (null? col&vals)
+	(dbi-bind-parameter! stmt i (cdar col&vals))
+	(loop (+ i 1) (cdr col&vals))))
+    (let ((r (dbi-execute! stmt)))
+      (dbi-close stmt)
+      (unless (zero? r) (slot-set! object (cadr primary-key) id))
+      r)))
 
 )

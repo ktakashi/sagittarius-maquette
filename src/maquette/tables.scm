@@ -33,7 +33,8 @@
 	    maquette-table-name
 	    maquette-table-columns
 	    maquette-table-column-specifications
-	    maquette-lookup-column-name)
+	    maquette-lookup-column-name
+	    maquette-lookup-column-specification)
     (import (rnrs)
 	    (clos user)
 	    (clos core))
@@ -74,7 +75,7 @@
       (map slot-definition->columns (class-slots class))))
 
 ;; only needed for create table statement so no cache
-(define (maquette-table-column-specifications class)
+(define (slot-definition->column-specification slot)
   (define (get-constraints slot)
     (let ((primary-key (slot-definition-option slot :primary-key #f))
 	  (foreign-key (slot-definition-option slot :foreign-key #f))
@@ -86,21 +87,29 @@
 	(:unique ,unique)
 	(:not-null? ,not-null?)
 	(:default ,default))))
-  (map (lambda (slot)
-	 (let* ((slot-name (slot-definition-name slot))
-		(column-name (slot-definition-option 
-			      slot :column-name slot-name))
-		(sql-type (slot-definition-option slot :sql-type 'int))
-		(constraints (get-constraints slot)))
-	   (cons* column-name slot-name sql-type constraints)))
+  (let* ((slot-name (slot-definition-name slot))
+	 (column-name (slot-definition-option 
+		       slot :column-name slot-name))
+	 (sql-type (slot-definition-option slot :sql-type 'int))
+	 (constraints (get-constraints slot)))
+    (cons* column-name slot-name sql-type constraints)))
+(define (maquette-table-column-specifications class)
+  (map slot-definition->column-specification
        (class-slots class)))
 
 (define (maquette-lookup-column-name class slot)
+  (let loop ((c (maquette-table-columns class)))
+    (cond ((null? c)
+	   (error 'maquette-lookup-column-name "no slot" class slot))
+	  ((eq? (cdar c) slot) (caar c))
+	  (else (loop (cdr c))))))
+
+(define (maquette-lookup-column-specification class slot)
   (let loop ((slots (class-slots class)))
     (cond ((null? slot) 
-	   (error 'maquette-lookup-column-name "no slot" class slot))
+	   (error 'maquette-lookup-column-specification "no slot" class slot))
 	  ((eq? (slot-definition-name (car slots)) slot)
-	   (car (slot-definition->columns (car slots))))
+	   (slot-definition->column-specification (car slots)))
 	  (else (loop (cdr slots))))))
 
 )

@@ -42,6 +42,11 @@
 	      '(select (id firstNames lastName addressId) (from person))
 	      (maquette-build-select-statement <person> #f))
 
+  (test-equal "SQL building (insert person)"
+	      '(insert-into person (id firstNames lastName addressId)
+			    (values (? ? ? ?)))
+	      (maquette-build-insert-statement <person> '()))
+
   (define conn (dbi-connect (format "dbi:sqlite3:database=~a" db-file)))
 
   ;; prepare tables
@@ -51,7 +56,13 @@
    conn (ssql->sql (maquette-build-create-statement <person>)))
   
   ;; inserts some data
-  
+  (test-equal "maquette-insert" 1
+	      (maquette-insert conn (make <person> :id 1 :first-names "Takashi"
+					  :last-name "Kato"
+					  :addredd (make <address> :id 1
+							 :city "Leiden"))))
+
+
   (dbi-close conn)
   (when (file-exists? db-file) (delete-file db-file))
   (test-end)
