@@ -185,21 +185,13 @@
 (define (maquette-insert conn object)
   (define class (class-of object))
   (define slots (class-slots class))
-  (define specifications (maquette-table-column-specifications class))
-
-  (define (find-primary-spec spec)
-    (let loop ((spec spec))
-      (cond ((null? spec) #f)
-	    ((assq :primary-key (cdddr (car spec))) (car spec))
-	    (else (loop (cdr spec))))))
-  ;; need this
-  (define primary-key (find-primary-spec specifications))
+  (define primary-key (maquette-table-primary-key-specification class))
 
   (define (generate-next-id object primary-key)
     (define generator (assq :generator (cddr primary-key)))
     (cond ((not (slot-bound? object (cadr primary-key)))
 	   (if generator
-	       ((cdr generator) conn)
+	       ((cadr generator) conn)
 	       (error 'maquette-insert 
 		      "primary key slot is unbound but no :generator" object)))
 	  ;; then you need to set manually
@@ -213,9 +205,7 @@
   (define (handle-slots object slots)
     (define (find-primary-key o)
       (define class (class-of o))
-      (define spec (maquette-table-column-specifications class))
-      (cond ((find-primary-spec spec) => (lambda (spec) (cadr spec)))
-	    (else #f)))
+      (maquette-table-primary-key-specification class))
 
     (define (handle-slot slot)
       (and-let* ((slot-name (slot-definition-name slot))
@@ -265,7 +255,6 @@
 	(dbi-bind-parameter! stmt i (cdar col&vals))
 	(loop (+ i 1) (cdr col&vals))))
     (let ((r (dbi-execute! stmt)))
-      (dbi-close stmt)
       (unless (zero? r) (slot-set! object (cadr primary-key) id))
       r)))
 

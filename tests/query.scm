@@ -2,6 +2,7 @@
 	(sagittarius)
 	(maquette query)
 	(dbi)
+	(clos user)
 	(srfi :64)
 	(text sql))
 
@@ -54,17 +55,17 @@
    conn (ssql->sql (maquette-build-create-statement <address>)))
   (dbi-execute-using-connection! 
    conn (ssql->sql (maquette-build-create-statement <person>)))
-  
+  (dbi-execute-using-connection! 
+   conn (ssql->sql '(create-table address_seq ((id int)))))
   ;; inserts some data
-  (test-equal "maquette-insert" 1
-	      (maquette-insert conn (make <person> :id 1 :first-names "Takashi"
-					  :last-name "Kato"
-					  :addredd (make <address>
-							 :city "Leiden"))))
-
+  (let* ((a (make <address> :city "Leiden"))
+	 (p (make <person> :id 1 :first-names "Takashi"
+		  :last-name "Kato" :address a)))
+    (test-equal "maquette-insert" 1 (maquette-insert conn p))
+    (test-assert (slot-bound? a 'id)))
 
   (dbi-close conn)
-  (when (file-exists? db-file) (delete-file db-file))
+  (when (file-exists? db-file) (guard (e (else #t))(delete-file db-file)))
   (test-end)
   )
  (else 
