@@ -42,6 +42,18 @@
   (test-equal "SQL building (select person)"
 	      '(select (id firstNames lastName addressId) (from person))
 	      (maquette-build-select-statement <person> #f))
+  (test-equal "SQL building (select person 2)"
+	      '(select (id firstNames lastName addressId) (from person)
+		       (where (= addressId 1)))
+	      (maquette-build-select-statement 
+	       <person> `(= address ,(make <address> :id 1))))
+  (test-equal "SQL building (select person 3)"
+	      '(select (id firstNames lastName addressId) (from person)
+		       (where (in addressId 1 2)))
+	      (maquette-build-select-statement 
+	       <person> `(in address 
+			     ,(make <address> :id 1)
+			     ,(make <address> :id 2))))
 
   (test-equal "SQL building (insert person)"
 	      '(insert-into person (id firstNames lastName addressId)
@@ -64,6 +76,8 @@
     (test-equal "maquette-insert" 1 (maquette-insert conn p))
     (test-assert (slot-bound? a 'id)))
 
+  ;; (print (maquette-select conn <person> `(= id 1)))
+  
   (dbi-close conn)
   (when (file-exists? db-file) (guard (e (else #t))(delete-file db-file)))
   (test-end)

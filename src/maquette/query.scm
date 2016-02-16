@@ -49,38 +49,6 @@
 	    (text sql)
 	    (match)
 	    (srfi :1))
-;; query = dbi query
-;; this is an internal procedure to map query 
-;; 
-(define (maquette-map-query query class)
-  (define slots (class-slots class))
-
-  (define (map-query1 columns q obj)
-    (define (find-slot i)
-      (define col (vector-ref columns i))
-      (let loop ((slots slots))
-	(cond ((null? slots) (string->symbol col)) ;; default
-	      ((string=? (slot-definition-option (car slots)
-						 :column-name "") col)
-	       (slot-definition-name (car slots)))
-	      (else (loop (cdr slots))))))
-    (define len (vector-length columns))
-    (let loop ((i 0))
-      (if (= i len)
-	  obj ;; TODO cache if the flag is there
-	  (let ((slot (find-slot i)))
-	    (when (slot-exists? obj slot)
-	      ;; TODO - foreign key (nested object)
-	      ;;      - collections (one to many)
-	      (slot-set! obj slot (vector-ref q i)))
-	    (loop (+ i 1))))))
-  ;; assume columns are mapped to query result properly
-  (let* ((columns (dbi-columns query)))
-    (let loop ((q (dbi-fetch! query)) (r '()))
-      (if q
-	  (let ((obj (make class)))
-	    (loop (dbi-fetch! query) (cons (map-query1 columns q obj) r)))
-	  (reverse! r)))))
 
 (define (maquette-build-create-statement class)
   (define specification (maquette-table-column-specifications class))
@@ -132,11 +100,40 @@
       (,@col
        ,@constraints))))
 
+;; condition must be either #f or a list of the following
+;; expression := condition | (or condition ...) | (and condition ...)
+;; condition  := (= lhs rhs) | (<> lhs rhs) | < and > ...
+;;             | (not expression)
+;;             | (or expression ...)
+;;             | (and expression ...)
 (define (maquette-build-select-statement class condition)
+  (define slots (class-slots class))
+  (define (build-condition condition)
+    (define (->ssql slot/val)
+      (cond ((symbol? slot/val)
+	     (or (maquette-lookup-column-name class slot/val) slot/val))
+	    ((is-a? (class-of slot/val) <maquette-table-meta>)
+	     (let* ((ocls (class-of slot/val))
+		    (spec (maquette-table-primary-key-specification ocls)))
+	       ;; get primary key
+	       (slot-ref slot/val (cadr spec))))
+	    (else slot/val)))
+    (case (car condition)
+      ((= <> < >) =>
+       (lambda (type)
+	 `(,type ,(->ssql (cadr condition)) ,(->ssql (caddr condition)))))
+      ((not) `(not ,(build-condition (cadr condition))))
+      ((in) `(in ,(->ssql (cadr condition)) ,@(map ->ssql (cddr condition))))
+      ((or and) =>
+       (lambda (type) `(,type ,@(map build-condition (cdr condition)))))
+      (else (error 'maquette-build-select-statement "unknown expression"
+		   condition))))
   `(select ,(map car (maquette-table-columns class))
 	   (from ,(maquette-table-name class))
 	   ;; TODO condition
-	   ,@(if condition '() ())))
+	   ,@(if condition
+		 `((where ,(build-condition condition))) 
+		 '())))
 
 (define (maquette-build-insert-statement class columns)
   (let ((cols (if (null? columns)
@@ -148,12 +145,44 @@
 ;; call dbi-bind-parameter!
 (define (apply-condition stmt condition) #f)
 
+;; query = dbi query
+;; this is an internal procedure to map query 
+;; 
+(define (maquette-map-query query class)
+  (define slots (class-slots class))
+
+  (define (map-query1 columns q obj)
+    (define (find-slot i)
+      (define col (string->symbol (vector-ref columns i)))
+      (let loop ((slots slots))
+	(cond ((null? slots) col) ;; default
+	      ((eq? (slot-definition-option (car slots) :column-name #f) col)
+	       (slot-definition-name (car slots)))
+	      (else (loop (cdr slots))))))
+    (define len (vector-length columns))
+    (let loop ((i 0))
+      (if (= i len)
+	  obj ;; TODO cache if the flag is there
+	  (let ((slot (find-slot i)))
+	    (when (slot-exists? obj slot)
+	      ;; TODO - foreign key (nested object)
+	      ;;      - collections (one to many)
+	      (slot-set! obj slot (vector-ref q i)))
+	    (loop (+ i 1))))))
+
+  ;; assume columns are mapped to query result properly
+  (let* ((columns (dbi-columns query)))
+    (let loop ((q (dbi-fetch! query)) (r '()))
+      (if q
+	  (let ((obj (make class)))
+	    (loop (dbi-fetch! query) (cons (map-query1 columns q obj) r)))
+	  (reverse! r)))))
 (define (maquette-select conn class :optional (condition #f))
   ;; TODO maybe we want to do caching prepared statement?
-  (let ((stmt (dbi-prepare conn 
-			   (maquette-build-select-statement class condition))))
+  (let* ((ssql (maquette-build-select-statement class condition))
+	 (stmt (dbi-prepare conn (ssql->sql ssql))))
     (when condition (apply-condition stmt condition))
-    (let ((q (dbi-execute! stmt)))
+    (let ((q (dbi-execute-query! stmt)))
       (let ((r (maquette-map-query q class)))
 	;; bad design, this closes prepared statement as well
 	;; then how can we reuse it?

@@ -1,4 +1,4 @@
-(import (clos user) (maquette tables) (maquette query))
+(import (clos user) (clos core) (maquette tables) (maquette query))
 
 (define-class <address> ()
   ((id :init-keyword :id :primary-key #t
@@ -18,3 +18,11 @@
 	    :column-name 'addressId))
   :metaclass <maquette-table-meta>)
 
+(define-method write-object ((o <person>) out)
+  (define (collect-slot o)
+    (map (lambda (slot)
+	   (let ((name (slot-definition-name slot)))
+	     (if (slot-bound? o name)
+		 (list name (slot-ref o name))
+		 (list name 'unbound)))) (class-slots (class-of o))))
+  (format out "#<person ~s>" (collect-slot o)))
