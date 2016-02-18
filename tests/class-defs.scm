@@ -4,9 +4,18 @@
   ((id :init-keyword :id :primary-key #t
        ;; for testing, we use SQLite3 which doesn't have sequence or stored
        ;; procedure. so make it like this...
-       :generator (maquette-generator "insert into address_seq (id) values ((select max(id)+1 from address_seq)); select id from address_seq;"))
+       :generator (maquette-generator "insert into address_seq (id) values ((select max(id)+1 from address_seq)); select max(id) from address_seq;"))
    (city :init-keyword :city :sql-type 'varchar :not-null? #t))
   :metaclass <maquette-table-meta>)
+
+(define-method write-object ((o <address>) out)
+  (define (collect-slot o)
+    (map (lambda (slot)
+	   (let ((name (slot-definition-name slot)))
+	     (if (slot-bound? o name)
+		 (list name (slot-ref o name))
+		 (list name 'unbound)))) (class-slots (class-of o))))
+  (format out "#<address ~s>" (collect-slot o)))
 
 (define-class <person> ()
   ((id :init-keyword :id :primary-key #t :sql-type 'bigint)

@@ -46,6 +46,7 @@
 	    (clos user)
 	    (dbi)
 	    (maquette tables)
+	    (util hashtables)
 	    (text sql)
 	    (match)
 	    (srfi :1)
@@ -115,15 +116,57 @@
 	  ((is-a? (class-of slot/val) <maquette-table-meta>)
 	   ;; TODO we need to walk through the object and build sub query
 	   ;;      if primary key isn't set.
-	   (when collect?
-	     (let* ((ocls (class-of slot/val))
-		    (spec (maquette-table-primary-key-specification ocls)))
-	       ;; get primary key
-	       (list-queue-add-back! collect? (slot-ref slot/val (cadr spec)))))
-	   '?)
+	   (let* ((ocls (class-of slot/val))
+		  (spec (maquette-table-primary-key-specification ocls)))
+	     (define (slot->condition slot)
+	       (let ((n (slot-definition-name slot)))
+		 (and (slot-bound? slot/val n)
+		    (let ((col (maquette-lookup-column-name ocls n)))
+		      (when collect?
+			(list-queue-add-back! collect? (slot-ref slot/val n)))
+		      `(= ,col ?)))))
+	     
+	     (cond ((slot-bound? slot/val (cadr spec))
+		    (when collect?
+		      ;; get primary key
+		      (list-queue-add-back! collect?
+					    (slot-ref slot/val (cadr spec))))
+		    '?)
+		   ;; ok build sub query
+		   ;; TODO multiple column unique key handling
+		   ((and-let* ((unique (maquette-find-column-specification 
+					class maquette-column-unique?))
+			       ( (slot-bound? slot/val (cadr unique)) ))
+		      unique) =>
+		      (lambda (unique)
+			(when collect? 
+			  (list-queue-add-back! collect? 
+			   (slot-ref slot/val (cadr unique))))
+		       `(select (,(car spec)) (from ,(maquette-table-name ocls))
+				(where (= ,(car unique) ?)))))
+		   (else
+		    ;; ok we need to construct query of bound slots
+		    `(select (,(car spec)) (from ,(maquette-table-name ocls))
+			     (where (and ,@(filter-map slot->condition 
+					    (class-slots ocls)))))))))
+		    
+		 
+
 	  (else (when collect? (list-queue-add-back! collect? slot/val)) '?)))
   (case (car condition)
-    ((= <> < > in) => (lambda (t) (cons t (map ->ssql (cdr condition)))))
+    ((= <> < >) => (lambda (t) (cons t (map ->ssql (cdr condition)))))
+    ((in) 
+     ;; in needs special treatment if condition value is sub query
+     (let ((col (->ssql (cadr condition)))
+	   (val (map ->ssql (cddr condition))))
+       (let-values (((replacements sub-queries)
+		     (partition (lambda (x) (eq? '? x)) val)))
+	 (if (null? sub-queries)
+	     (list 'in col val)
+	     `(and ,@(if (null? replacements)
+			 '()
+			 `((in ,col ,replacements)))
+		   ,@(map (lambda (sub) `(in ,col ,sub)) sub-queries))))))
     ((not) `(not ,(build-condition class (cadr condition) collect?)))
     ((or and) =>
      (lambda (t)
@@ -143,7 +186,7 @@
 ;; query = dbi query
 ;; this is an internal procedure to map query 
 ;; 
-(define (maquette-map-query query class)
+(define (maquette-map-query query class delaying)
   (define slots (class-slots class))
 
   (define (map-query1 columns q obj)
@@ -160,9 +203,22 @@
 	  obj ;; TODO cache if the flag is there
 	  (let ((slot (find-slot i)))
 	    (when (slot-exists? obj slot)
-	      ;; TODO - foreign key (nested object)
-	      ;;      - collections (one to many)
-	      (slot-set! obj slot (vector-ref q i)))
+	      (let ((spec (maquette-lookup-column-specification class slot))
+		    (v (vector-ref q i)))
+		(cond ((hashtable-ref delaying slot #f) =>
+		       (lambda (delayed)
+			 (case (car delayed)
+			   ((foreign)
+			    (let ((s (cdr delayed)))
+			      (vector-set! s 1 (acons v obj (vector-ref s 1)))))
+			   ;; TODO collection
+			   (else (error 'internal "unknown")))))
+		      ((maquette-column-foreign-key? spec) => 
+		       (lambda (key)
+			 (hashtable-set! delaying slot 
+			   (cons 'foreign `#(,(cadr key) ((,v . ,obj)))))))
+		      ;; TODO collections (one to many)
+		      (else (slot-set! obj slot v)))))
 	    (loop (+ i 1))))))
 
   ;; assume columns are mapped to query result properly
@@ -172,20 +228,45 @@
 	  (let ((obj (make class)))
 	    (loop (dbi-fetch! query) (cons (map-query1 columns q obj) r)))
 	  (reverse! r)))))
+
 (define (maquette-select conn class :optional (condition #f))
+  (define (handle-foreign-key this-slot value)
+    (let* ((key (vector-ref value 0))
+	   (values  (vector-ref value 1))
+	   (slot (cadr key))
+	   (v* (map car values)))
+      (let loop ((r (maquette-select conn (car key) `(in ,slot ,@v*))))
+	(unless (null? r)
+	  (let* ((o (car r))
+		 (id (slot-ref o slot)))
+	    ;; never heard of foreign key or primary key to be non
+	    ;; number but just in case.
+	    (cond ((assoc id values) =>
+		   (lambda (slot) 
+		     (slot-set! (cdr slot) this-slot o)))))
+	  (loop (cdr r))))))
+      
   ;; TODO maybe we want to do caching prepared statement?
   (let* ((queue (if condition (list-queue) #f))
 	 (ssql (maquette-build-select-statement class condition queue))
 	 (stmt (apply dbi-prepare conn (ssql->sql ssql)
 		      (if queue (list-queue-list queue) '()))))
-    (let ((q (dbi-execute-query! stmt)))
-      (let ((r (maquette-map-query q class)))
-	;; bad design, this closes prepared statement as well
-	;; then how can we reuse it?
-	;; To fix this, we need to make all DBD implementations
-	;; not to close prepared statement.
-	(dbi-close q)
-	r))))
+    (let* ((q (dbi-execute-query! stmt))
+	   (delaying (make-eq-hashtable))
+	   (r (maquette-map-query q class delaying)))
+      ;; bad design, this closes prepared statement as well
+      ;; then how can we reuse it?
+      ;; To fix this, we need to make all DBD implementations
+      ;; not to close prepared statement.
+      (dbi-close q)
+      ;; now mapping foreign keys
+      (hashtable-for-each
+       (lambda (slot value)
+	 (case (car value)
+	   ((foreign) (handle-foreign-key slot (cdr value)))
+	   (else (error 'maquette-select "unknown"))))
+       delaying)
+      r)))
 
 (define (maquette-generator expression)
   (define sqls 

@@ -35,7 +35,17 @@
 	    maquette-table-column-specifications
 	    maquette-lookup-column-name
 	    maquette-lookup-column-specification
-	    maquette-table-primary-key-specification)
+	    maquette-find-column-specification
+	    maquette-table-primary-key-specification
+
+	    ;; predefined predicate
+	    maquette-column-primary-key?
+	    maquette-column-foreign-key?
+	    maquette-column-unique?
+	    maquette-column-not-null?
+	    maquette-column-has-default?
+	    maquette-column-has-generator?
+	    )
     (import (rnrs)
 	    (sagittarius)
 	    (srfi :1)
@@ -118,6 +128,19 @@
 	  ((eq? (slot-definition-name (car slots)) slot)
 	   (slot-definition->column-specification (car slots)))
 	  (else (loop (cdr slots))))))
+
+(define (maquette-find-column-specification class pred)
+  (let loop ((columns (maquette-table-column-specifications class)))
+    (cond ((null? columns) #f)
+	  ((pred (car columns)) (car columns))
+	  (else (loop (cdr columns))))))
+
+(define (maquette-column-primary-key? spec) (assq :primary-key (cddr spec)))
+(define (maquette-column-foreign-key? spec) (assq :foreign-key (cddr spec)))
+(define (maquette-column-unique? spec) (assq :unique (cddr spec)))
+(define (maquette-column-not-null? spec) (assq :not-null? (cddr spec)))
+(define (maquette-column-has-default? spec) (assq :default (cddr spec)))
+(define (maquette-column-has-generator? spec) (assq :generator (cddr spec)))
 
 (define (maquette-table-primary-key-specification class)
   (define (find-primary-spec)
