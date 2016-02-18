@@ -99,6 +99,15 @@
 			  (values (? ? ? ?)))
 	    (maquette-build-insert-statement <person> '()))
 
+(test-equal "SQL building (update person)"
+	    '(update person (set! (= firstNames ?)))
+	    (maquette-build-update-statement <person> '(firstNames) #f))
+(test-equal "SQL building (update person 2)"
+	    '(update person (set! (= firstNames ?)) 
+		     (where (= addressId ?)))
+	    (maquette-build-update-statement <person> '(firstNames) 
+	      `(= address ,(make <address> :id 1))))
+
 (cond-expand
  ((library (dbd sqlite3))
   ;; first drop all
@@ -150,7 +159,13 @@
   (test-equal "maquette-select (sub querying)" 2 
 	      (length (maquette-select conn <person>
 		       `(in address ,(make <address> :city "Leiden")))))
-  
+
+  (test-equal "maquette-update" 1
+	      (maquette-update conn (make <person> :id 3 
+					  :first-names "Takashi Yey")))
+  (test-equal "Takashi Yey"
+	      (let ((r (maquette-select conn <person> `(= id 3))))
+		(slot-ref (car r) 'first-names)))
   (dbi-close conn)
   (when (file-exists? db-file) (guard (e (else #t))(delete-file db-file)))
 

@@ -38,13 +38,16 @@
 	    maquette-find-column-specification
 	    maquette-table-primary-key-specification
 
+	    maquette-column-name
+	    maquette-column-slot-name
+	    maquette-column-type
 	    ;; predefined predicate
 	    maquette-column-primary-key?
 	    maquette-column-foreign-key?
 	    maquette-column-unique?
 	    maquette-column-not-null?
-	    maquette-column-has-default?
-	    maquette-column-has-generator?
+	    maquette-column-default?
+	    maquette-column-generator?
 	    )
     (import (rnrs)
 	    (sagittarius)
@@ -135,12 +138,20 @@
 	  ((pred (car columns)) (car columns))
 	  (else (loop (cdr columns))))))
 
+;; accessors
+(define (maquette-column-name spec) (car spec))
+(define (maquette-column-slot-name spec) (cadr spec))
+(define (maquette-column-type spec) (caddr spec))
+
 (define (maquette-column-primary-key? spec) (assq :primary-key (cddr spec)))
-(define (maquette-column-foreign-key? spec) (assq :foreign-key (cddr spec)))
+(define (maquette-column-foreign-key? spec) 
+  (cond ((assq :foreign-key (cddr spec)) => cadr) (else #f)))
 (define (maquette-column-unique? spec) (assq :unique (cddr spec)))
 (define (maquette-column-not-null? spec) (assq :not-null? (cddr spec)))
-(define (maquette-column-has-default? spec) (assq :default (cddr spec)))
-(define (maquette-column-has-generator? spec) (assq :generator (cddr spec)))
+(define (maquette-column-default? spec) 
+  (cond ((assq :default (cddr spec)) => cadr) (else #f)))
+(define (maquette-column-generator? spec) 
+  (cond ((assq :generator (cddr spec)) => cadr) (else #f)))
 
 (define (maquette-table-primary-key-specification class)
   (define (find-primary-spec)

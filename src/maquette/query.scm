@@ -31,7 +31,7 @@
 (library (maquette query)
     (export maquette-select
 	    maquette-insert
-	    ;;maquette-update
+	    maquette-update
 	    ;;maquette-delete
 
 	    maquette-generator
@@ -39,6 +39,7 @@
 	    maquette-build-create-statement
 	    maquette-build-select-statement
 	    maquette-build-insert-statement
+	    maquette-build-update-statement
 	    )
     (import (rnrs)
 	    (sagittarius) ;; for reverse!
@@ -53,6 +54,8 @@
 	    (srfi :26)
 	    (srfi :117))
 
+;;; CREATE
+;; more for testing
 (define (maquette-build-create-statement class)
   (define specification (maquette-table-column-specifications class))
   (define (parse-spec specification)
@@ -109,7 +112,12 @@
 ;;             | (not expression)
 ;;             | (or expression ...)
 ;;             | (and expression ...)
-(define (build-condition class condition :optional (collect? #f))
+;; utility this can be used for select, update and delete
+
+;; class = table class
+;; condition = see above 
+;; collect? = #f or list-queue
+(define (build-condition class condition collect?)
   (define (->ssql slot/val)
     (cond ((symbol? slot/val)
 	   (or (maquette-lookup-column-name class slot/val) slot/val))
@@ -174,11 +182,11 @@
     (else (error 'maquette-build-select-statement "unknown expression"
 		 condition))))
 
+;;; SELECT
 (define (maquette-build-select-statement 
 	 class condition :optional (collect? #f))
   `(select ,(map car (maquette-table-columns class))
 	   (from ,(maquette-table-name class))
-	   ;; TODO condition
 	   ,@(if condition
 		 `((where ,(build-condition class condition collect?)))
 		 '())))
@@ -216,7 +224,7 @@
 		      ((maquette-column-foreign-key? spec) => 
 		       (lambda (key)
 			 (hashtable-set! delaying slot 
-			   (cons 'foreign `#(,(cadr key) ((,v . ,obj)))))))
+			   (cons 'foreign `#(,key ((,v . ,obj)))))))
 		      ;; TODO collections (one to many)
 		      (else (slot-set! obj slot v)))))
 	    (loop (+ i 1))))))
@@ -251,23 +259,25 @@
 	 (ssql (maquette-build-select-statement class condition queue))
 	 (stmt (apply dbi-prepare conn (ssql->sql ssql)
 		      (if queue (list-queue-list queue) '()))))
-    (let* ((q (dbi-execute-query! stmt))
-	   (delaying (make-eq-hashtable))
-	   (r (maquette-map-query q class delaying)))
-      ;; bad design, this closes prepared statement as well
-      ;; then how can we reuse it?
-      ;; To fix this, we need to make all DBD implementations
-      ;; not to close prepared statement.
-      (dbi-close q)
-      ;; now mapping foreign keys
-      (hashtable-for-each
-       (lambda (slot value)
-	 (case (car value)
-	   ((foreign) (handle-foreign-key slot (cdr value)))
-	   (else (error 'maquette-select "unknown"))))
-       delaying)
-      r)))
+    (guard (e (else (dbi-close stmt) (raise e)))
+      (let* ((q (dbi-execute-query! stmt))
+	     (delaying (make-eq-hashtable))
+	     (r (maquette-map-query q class delaying)))
+	;; bad design, this closes prepared statement as well
+	;; then how can we reuse it?
+	;; To fix this, we need to make all DBD implementations
+	;; not to close prepared statement.
+	(dbi-close q)
+	;; now mapping foreign keys
+	(hashtable-for-each
+	 (lambda (slot value)
+	   (case (car value)
+	     ((foreign) (handle-foreign-key slot (cdr value)))
+	     (else (error 'maquette-select "unknown"))))
+	 delaying)
+	r))))
 
+;;; INSERT
 (define (maquette-generator expression)
   (define sqls 
     (let ((in (open-string-input-port expression)))
@@ -329,27 +339,29 @@
 	       ;; ok it's nested class insert if nessessary
 	       ;; if this is foreign-key then we need to check
 	       ;; the reference columns are filled
-	       (cond ((assq :foreign-key (cdddr spec)) =>
-		      (lambda (slot)
-			(let ((fkey (cadr slot)))
+	       (let ((column (maquette-column-name spec))
+		     (slot   (maquette-column-slot-name spec)))
+		 (cond ((maquette-column-foreign-key? spec) =>
+			(lambda (fkey)
 			  (unless (slot-bound? o (cadr fkey))
 			    (maquette-insert conn o))
 			  ;; return the inserting value
-			  `(,(car spec) . ,(slot-ref o (cadr fkey))))))
-		     ((find-primary-key o) =>
-		      (lambda (slot)
-			(unless (slot-bound? o slot)
-			  (maquette-insert conn o))
-			;; return the interting value
-			`(,(car spec) . ,(slot-ref o slot))))
-		     (else
-		      (error 'maquette-insert 
-			     "Object doesn't have foreign-key nor primary key"
-			     o))))
+			  `(,column . ,(slot-ref o (cadr fkey)))))
+		       ((find-primary-key o) =>
+			(lambda (pkey)
+			  (let ((pslot (maquette-column-slot-name pkey)))
+			    (unless (slot-bound? o pslot)
+			      (maquette-insert conn o))
+			    ;; return the interting value
+			    `(,column . ,(slot-ref o pslot)))))
+		       (else
+			(error 'maquette-insert 
+			       "Object doesn't have foreign-key nor primary key"
+			       o)))))
 	      ((pair? o)   (error 'maquette-insert "not supported yet" o))
 	      ((vector? o) (error 'maquette-insert "not supported yet" o))
 	      ;; must be something bindable
-	      (else `(,(car spec) . ,o)))))
+	      (else `(,(maquette-column-name spec) . ,o)))))
     (filter-map handle-slot slots))
 
   (unless primary-key 
@@ -368,7 +380,50 @@
 	(dbi-bind-parameter! stmt i (cdar col&vals))
 	(loop (+ i 1) (cdr col&vals))))
     (let ((r (dbi-execute! stmt)))
+      (dbi-close stmt)
       (unless (zero? r) (slot-set! object (cadr primary-key) id))
+      r)))
+
+;;; UPDATE
+(define (maquette-build-update-statement class columns condiiton 
+					 :optional (collect? #f))
+  `(update ,(maquette-table-name class)
+	   (set! ,@(map (lambda (col) `(= ,col ?)) columns))
+	   ,@(if condiiton 
+		 `((where ,(build-condition class condiiton collect?)))
+		 '())))
+
+(define (maquette-update conn object) 
+  (define class (class-of object))
+  (define primary-key (maquette-table-primary-key-specification class))
+
+  (define (collect-columns o q)
+    ;; we don't allow to change id, if you want to do it
+    ;; do delete -> insert.
+    (filter-map (lambda (s) 
+		  (and (not (eq? s (maquette-column-slot-name primary-key)))
+		       (slot-bound? o s)
+		       (list-queue-add-back! q (slot-ref o s))
+		       (maquette-lookup-column-name class s)))
+		(map slot-definition-name (class-slots class))))
+  (define (create-condition o)
+    (let ((pkey-slot (maquette-column-slot-name primary-key)))
+      (if (slot-bound? o pkey-slot)
+	  `(= ,pkey-slot ,(slot-ref o pkey-slot))
+	  ;; ugh
+	  `(and ,@(filter-map 
+		   (lambda (slot)
+		     (and (slot-bound? o slot)
+			  `(= ,slot ,(slot-ref o slot))))
+		   (map slot-definition-name (class-slots class)))))))
+  (let* ((value (list-queue))
+	 (columns (collect-columns object value))
+	 (condition (create-condition object))
+	 (ssql (maquette-build-update-statement class columns condition value))
+	 (stmt (apply dbi-prepare conn (ssql->sql ssql) 
+		      (list-queue-list value))))
+    (let ((r (dbi-execute! stmt)))
+      (dbi-close stmt)
       r)))
 
 )
