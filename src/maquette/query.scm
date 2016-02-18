@@ -48,7 +48,9 @@
 	    (maquette tables)
 	    (text sql)
 	    (match)
-	    (srfi :1))
+	    (srfi :1)
+	    (srfi :26)
+	    (srfi :117))
 
 (define (maquette-build-create-statement class)
   (define specification (maquette-table-column-specifications class))
@@ -106,44 +108,37 @@
 ;;             | (not expression)
 ;;             | (or expression ...)
 ;;             | (and expression ...)
-(define (maquette-build-select-statement class condition)
-  (define slots (class-slots class))
-  (define (build-condition condition)
-    (define (->ssql slot/val)
-      (cond ((symbol? slot/val)
-	     (or (maquette-lookup-column-name class slot/val) slot/val))
-	    ((is-a? (class-of slot/val) <maquette-table-meta>)
+(define (build-condition class condition :optional (collect? #f))
+  (define (->ssql slot/val)
+    (cond ((symbol? slot/val)
+	   (or (maquette-lookup-column-name class slot/val) slot/val))
+	  ((is-a? (class-of slot/val) <maquette-table-meta>)
+	   ;; TODO we need to walk through the object and build sub query
+	   ;;      if primary key isn't set.
+	   (when collect?
 	     (let* ((ocls (class-of slot/val))
 		    (spec (maquette-table-primary-key-specification ocls)))
 	       ;; get primary key
-	       (slot-ref slot/val (cadr spec))))
-	    (else slot/val)))
-    (case (car condition)
-      ((= <> < >) =>
-       (lambda (type)
-	 `(,type ,(->ssql (cadr condition)) ,(->ssql (caddr condition)))))
-      ((not) `(not ,(build-condition (cadr condition))))
-      ((in) `(in ,(->ssql (cadr condition)) ,@(map ->ssql (cddr condition))))
-      ((or and) =>
-       (lambda (type) `(,type ,@(map build-condition (cdr condition)))))
-      (else (error 'maquette-build-select-statement "unknown expression"
-		   condition))))
+	       (list-queue-add-back! collect? (slot-ref slot/val (cadr spec)))))
+	   '?)
+	  (else (when collect? (list-queue-add-back! collect? slot/val)) '?)))
+  (case (car condition)
+    ((= <> < > in) => (lambda (t) (cons t (map ->ssql (cdr condition)))))
+    ((not) `(not ,(build-condition class (cadr condition) collect?)))
+    ((or and) =>
+     (lambda (t)
+       `(,t ,@(map (cut build-condition class <> collect?) (cdr condition)))))
+    (else (error 'maquette-build-select-statement "unknown expression"
+		 condition))))
+
+(define (maquette-build-select-statement 
+	 class condition :optional (collect? #f))
   `(select ,(map car (maquette-table-columns class))
 	   (from ,(maquette-table-name class))
 	   ;; TODO condition
 	   ,@(if condition
-		 `((where ,(build-condition condition))) 
+		 `((where ,(build-condition class condition collect?)))
 		 '())))
-
-(define (maquette-build-insert-statement class columns)
-  (let ((cols (if (null? columns)
-		  (map car (maquette-table-columns class))
-		  columns)))
-    `(insert-into ,(maquette-table-name class)
-		  ,cols
-		  (values ,(list-tabulate (length cols) (lambda (i) '?))))))
-;; call dbi-bind-parameter!
-(define (apply-condition stmt condition) #f)
 
 ;; query = dbi query
 ;; this is an internal procedure to map query 
@@ -179,9 +174,10 @@
 	  (reverse! r)))))
 (define (maquette-select conn class :optional (condition #f))
   ;; TODO maybe we want to do caching prepared statement?
-  (let* ((ssql (maquette-build-select-statement class condition))
-	 (stmt (dbi-prepare conn (ssql->sql ssql))))
-    (when condition (apply-condition stmt condition))
+  (let* ((queue (if condition (list-queue) #f))
+	 (ssql (maquette-build-select-statement class condition queue))
+	 (stmt (apply dbi-prepare conn (ssql->sql ssql)
+		      (if queue (list-queue-list queue) '()))))
     (let ((q (dbi-execute-query! stmt)))
       (let ((r (maquette-map-query q class)))
 	;; bad design, this closes prepared statement as well
@@ -210,6 +206,13 @@
 	    (dbi-execute-using-connection! conn (car sqls))
 	    (loop (cdr sqls)))))))
 
+(define (maquette-build-insert-statement class columns)
+  (let ((cols (if (null? columns)
+		  (map car (maquette-table-columns class))
+		  columns)))
+    `(insert-into ,(maquette-table-name class)
+		  ,cols
+		  (values ,(list-tabulate (length cols) (lambda (i) '?))))))
 ;; insertion can be done with object without class.
 (define (maquette-insert conn object)
   (define class (class-of object))
