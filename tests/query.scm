@@ -108,13 +108,22 @@
 	    (maquette-build-update-statement <person> '(firstNames) 
 	      `(= address ,(make <address> :id 1))))
 
+(test-equal "SQL building (delete person)"
+	    '(delete-from person)
+	    (maquette-build-delete-statement <person> #f))
+(test-equal "SQL building (delete person 2)"
+	    '(delete-from person (where (= addressId ?)))
+	    (maquette-build-delete-statement <person> 
+	      `(= address ,(make <address> :id 1))))
+
 (cond-expand
  ((library (dbd sqlite3))
   ;; first drop all
   (define db-file "test.db")
   (when (file-exists? db-file) (delete-file db-file))
 
-  (define conn (dbi-connect (format "dbi:sqlite3:database=~a" db-file)))
+  (define conn (dbi-connect (format "dbi:sqlite3:database=~a" db-file)
+			    :auto-commit #f))
 
   ;; prepare tables
   (dbi-execute-using-connection! 
@@ -166,6 +175,12 @@
   (test-equal "Takashi Yey"
 	      (let ((r (maquette-select conn <person> `(= id 3))))
 		(slot-ref (car r) 'first-names)))
+
+  (test-equal "maquette-delete (1)" 1
+	      (maquette-delete conn (make <person> :id 3)))
+  (test-equal "maquette-delete (2)" 2
+	      (maquette-delete conn (make <person> :last-name "Kato")))
+
   (dbi-close conn)
   (when (file-exists? db-file) (guard (e (else #t))(delete-file db-file)))
 

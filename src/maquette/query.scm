@@ -32,7 +32,7 @@
     (export maquette-select
 	    maquette-insert
 	    maquette-update
-	    ;;maquette-delete
+	    maquette-delete
 
 	    maquette-generator
 	    ;; for testing
@@ -40,6 +40,7 @@
 	    maquette-build-select-statement
 	    maquette-build-insert-statement
 	    maquette-build-update-statement
+	    maquette-build-delete-statement
 	    )
     (import (rnrs)
 	    (sagittarius) ;; for reverse!
@@ -420,6 +421,37 @@
 	 (columns (collect-columns object value))
 	 (condition (create-condition object))
 	 (ssql (maquette-build-update-statement class columns condition value))
+	 (stmt (apply dbi-prepare conn (ssql->sql ssql) 
+		      (list-queue-list value))))
+    (let ((r (dbi-execute! stmt)))
+      (dbi-close stmt)
+      r)))
+
+;;; DELETE
+(define (maquette-build-delete-statement class condition
+					 :optional (collect? #f))
+  `(delete-from ,(maquette-table-name class)
+		,@(if condition
+		      `((where ,(build-condition class condition collect?)))
+		      '())))
+
+(define (maquette-delete conn object)
+  (define class (class-of object))
+  (define primary-key (maquette-table-primary-key-specification class))
+
+  (define (create-condition o)
+    (let ((pkey-slot (maquette-column-slot-name primary-key)))
+      (if (slot-bound? o pkey-slot)
+	  `(= ,pkey-slot ,(slot-ref o pkey-slot))
+	  ;; ugh
+	  `(and ,@(filter-map 
+		   (lambda (slot)
+		     (and (slot-bound? o slot)
+			  `(= ,slot ,(slot-ref o slot))))
+		   (map slot-definition-name (class-slots class)))))))
+  (let* ((value (list-queue))
+	 (condition (create-condition object))
+	 (ssql (maquette-build-delete-statement class condition value))
 	 (stmt (apply dbi-prepare conn (ssql->sql ssql) 
 		      (list-queue-list value))))
     (let ((r (dbi-execute! stmt)))
