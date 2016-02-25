@@ -25,6 +25,9 @@
 	      (make-maquette-connection-pool 1 dsn)
 	      (make-maquette-connection dsn)))
 
+(test-equal 10 (maquette-connection-pool-max-connection-count
+		(make-maquette-connection-pool 10 dsn)))
+
 (cond-expand
  ((library (dbd sqlite3))
   ;; first drop all
@@ -91,13 +94,19 @@
 
     (test-assert (maquette-connection-pool?
 		  (maquette-connection-pool-release! pool)))
-    (test-assert (not (maquette-connection-open? c))))
+    (test-assert (not (maquette-connection-open? c)))
 
-  ;; re-opened
-  (test-assert (maquette-connection-pool-re-pool! pool))
-  (test-assert (maquette-connection-pool-connection-available? pool))
 
-  (test-equal 'ok (call-with-available-connection pool (lambda (conn) 'ok)))
+    ;; re-opened
+    (test-assert (maquette-connection-pool-re-pool! pool))
+    (test-assert (maquette-connection-pool-connection-available? pool))
+    ;; no longer in the same pool
+    (test-error assertion-violation?
+		(maquette-connection-pool-return-connection pool c))
+
+    (test-equal 'ok (call-with-available-connection pool (lambda (conn) 'ok)))
+
+    )
   
   (when (file-exists? db-file) (guard (e (else #t))(delete-file db-file)))
 

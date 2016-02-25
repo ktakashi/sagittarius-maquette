@@ -48,6 +48,7 @@
 	    maquette-connection-pool-re-pool!
 	    maquette-connection-pool-connection-available?
 	    maquette-connection-pool-available-connection-count
+	    maquette-connection-pool-max-connection-count
 
 	    ;; transaction
 	    with-maquette-transaction
@@ -64,6 +65,7 @@
 (define-class <maquette-connection> ()
   ((dbi-connection :init-keyword :dbi-connection :init-value #f
 		   :reader maquette-connection-dbi-connection)
+   ;; for reconnect
    (dsn :init-keyword :dsn)
    (options :init-keyword :options)))
 (define (maquette-connection? o) (is-a? o <maquette-connection>))
@@ -101,15 +103,20 @@
   (dbi-rollback! (~ c 'dbi-connection)) 
   c)
 
-;; connection pool
+;;; connection pool
 ;; We do very simple connection pooling here. The basic strategy is
 ;; that using shared-queue to manage connection retrieval and returning.
 (define-class <maquette-connection-pool> ()
   ((pool :init-keyword :pool) ;; shared-queue
    (connections :init-keyword :connections) ;; actual connections
+   ;; for re-pool
+   (max-connection :init-keyword :max-connection
+		   :reader maquette-connection-pool-max-connection-count)
+   (dsn :init-keyword :dsn)
+   (options :init-keyword :options)
    (lock :init-form (make-mutex))))
 
-(define (make-maquette-connection-pool max-connection dsn . options)
+(define (init-connections max-connection dsn options)
   (define (make-connections n)
     (let loop ((i 0) (r '())) 
       (if (= i n) 
@@ -119,7 +126,11 @@
   (let ((sq (make-shared-queue))
 	(conns (make-connections max-connection)))
     (for-each (cut shared-queue-put! sq <>) conns)
-    (make <maquette-connection-pool> :pool sq :connections conns)))
+    (values sq conns)))
+(define (make-maquette-connection-pool max-connection dsn . options)
+  (let-values (((sq conns) (init-connections max-connection dsn options)))
+    (make <maquette-connection-pool> :pool sq :connections conns
+	  :dsn dsn :options options :max-connection max-connection)))
 
 (define (maquette-connection-pool? o) (is-a? o <maquette-connection-pool>))
 
@@ -159,14 +170,16 @@
   ;; closes all connection
   (for-each maquette-connection-close! (~ cp 'connections))
   (set! (~ cp 'pool) #f)
+  (set! (~ cp 'connections) '())
   cp)
 
 ;; Should we provide this?
 (define (maquette-connection-pool-re-pool! cp)
   (unless (~ cp 'pool) 
-    (let ((sq (make-shared-queue)))
+    (let-values (((sq conns) (init-connections (~ cp 'max-connection)
+					       (~ cp 'dsn) (~ cp 'options))))
       (set! (~ cp 'pool) sq)
-      (for-each (cut shared-queue-put! sq <>) (~ cp 'connections))))
+      (set! (~ cp 'connections) conns)))
   cp)
 
 ;; High level APIs
