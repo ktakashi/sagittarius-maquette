@@ -51,7 +51,7 @@
 	    maquette-connection-pool-max-connection-count
 
 	    ;; transaction
-	    with-maquette-transaction
+	    with-maquette-connection-transaction
 	    call-with-available-connection
 	    )
     (import (rnrs)
@@ -147,6 +147,9 @@
   ;; avoid duplicate connection to be pushed
   ;; so returning is a bit more expensive than retrieving
   (mutex-lock! (~ cp 'lock))
+  ;; once it's returned then at least we need to rollback the 
+  ;; transaction.
+  (guard (e (else #t)) (maquette-connection-rollback! conn))
   (unless (shared-queue-find (~ cp 'pool) (lambda (e) (eq? e conn)))
     ;; if the connection is closed, then retriever makes sure the connectivity
     ;; so simply push
@@ -185,15 +188,18 @@
 ;; High level APIs
 ;; this would block. it is users' responsibility to check if there's an
 ;; available connection.
-(define (call-with-available-connection cp proc)
+(define (call-with-available-connection cp proc . opt)
   (let ((conn #f))
     (dynamic-wind
-	(lambda () (set! conn (maquette-connection-pool-get-connection cp)))
-	(lambda () (proc conn))
-	(lambda () (maquette-connection-pool-return-connection cp conn)))))
+	(lambda () 
+	  (set! conn (apply maquette-connection-pool-get-connection cp opt)))
+	(lambda () (if (maquette-connection? conn) (proc conn) conn))
+	(lambda () 
+	  (when (maquette-connection? conn)
+	    (maquette-connection-pool-return-connection cp conn))))))
 
 ;; transaction
-(define-syntax with-maquette-transaction
+(define-syntax with-maquette-connection-transaction
   (syntax-rules ()
     ((_ conn expr ...)
      (let ((c conn))

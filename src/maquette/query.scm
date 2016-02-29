@@ -312,10 +312,10 @@
   (define primary-key (maquette-table-primary-key-specification class))
 
   (define (generate-next-id object primary-key)
-    (define generator (assq :generator (cddr primary-key)))
+    (define generator (maquette-column-generator? primary-key))
     (cond ((not (slot-bound? object (cadr primary-key)))
 	   (if generator
-	       ((cadr generator) conn)
+	       (generator conn)
 	       (error 'maquette-insert 
 		      "primary key slot is unbound but no :generator" object)))
 	  ;; then you need to set manually
@@ -361,6 +361,7 @@
 			       o)))))
 	      ((pair? o)   (error 'maquette-insert "not supported yet" o))
 	      ((vector? o) (error 'maquette-insert "not supported yet" o))
+	      ((maquette-column-primary-key? spec) #f)
 	      ;; must be something bindable
 	      (else `(,(maquette-column-name spec) . ,o)))))
     (filter-map handle-slot slots))
@@ -371,7 +372,7 @@
 	   class))
 
   (and-let* ((id (generate-next-id object primary-key))
-	     (col&vals (cons (cons (cadr primary-key) id)
+	     (col&vals (cons (cons (maquette-column-name primary-key) id)
 			     (handle-slots object slots)))
 	     (ssql (maquette-build-insert-statement class (map car col&vals)))
 	     (stmt (dbi-prepare conn (ssql->sql ssql))))

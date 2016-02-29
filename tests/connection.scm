@@ -71,7 +71,7 @@
   (test-assert (maquette-connection-start-transaction! connection))
   (test-assert (maquette-connection-rollback! connection))
 
-  (test-equal 'ok (with-maquette-transaction connection 'ok))
+  (test-equal 'ok (with-maquette-connection-transaction connection 'ok))
 
   ;; connection pool
   (let ((c (maquette-connection-pool-get-connection pool)))

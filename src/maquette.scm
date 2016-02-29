@@ -29,5 +29,76 @@
 ;;;  
 
 (library (maquette)
-    (export :all)
-    (import (maquette records)))
+    (export make-maquette-context
+	    maquette-context?
+	    maquette-max-connection-count
+
+	    maquette-query
+	    maquette-save
+	    maquette-remove
+
+	    with-maquette-transaction
+	    maquette-context-in-transaction?
+
+	    ;; this is needed to create user defined table class
+	    <maquette-table-meta>
+	    )
+    (import (rnrs)
+	    (clos core)
+	    (sagittarius)
+	    (sagittarius object)
+	    (maquette context)
+	    (maquette connection)
+	    (maquette query)
+	    (maquette tables))
+
+(define (maquette-query ctx class condition 
+			:key (timeout #f) (timeout-value #f))
+  (call-with-maquette-connection ctx
+    (lambda (conn)
+      (maquette-select (maquette-connection-dbi-connection conn) 
+		       class condition))
+    :timeout timeout :timeout-value timeout-value))
+
+;; *sigh* if we can use MERGE statement...
+;; NB: it's not only (text sql) but not a lot of RDBMS support it.
+(define (maquette-save ctx obj :key (on-update 'optimistic))
+  (call-with-maquette-connection ctx
+    (lambda (conn)
+      (define dbi-conn (maquette-connection-dbi-connection conn))
+      (define class (class-of obj))
+      (define primary-key (maquette-table-primary-key-specification class))
+      (define id (maquette-column-slot-name primary-key))
+
+      (define (select->insert/update generator?)
+	(let ((r (maquette-select dbi-conn class `(= ,id ,(~ obj id)))))
+	  (if (null? r)
+	      (begin
+		(when generator? (set! (~ obj id) (undefined)))
+		(maquette-insert dbi-conn obj))
+	      (maquette-update dbi-conn obj))))
+      (if (slot-bound? obj id)
+	  (case on-update
+	    ((optimistic) 
+	     (if (maquette-column-generator? primary-key)
+		 ;; trust it
+		 (maquette-update dbi-conn obj)
+		 ;; we can't say if this is initial value or not
+		 (select->insert/update #f)))
+	    ;; alway check existance
+	    ((conservative)
+	     (select->insert/update (maquette-column-generator? primary-key)))
+	    (else (assertion-violation 'maquette-save
+		   ":on-update must be 'optimistic or 'conservative"
+		   on-update)))
+	  (maquette-insert dbi-conn obj))
+      obj)))
+
+;; TODO should we check the primary key slot for safety?
+(define (maquette-remove ctx template)
+  (call-with-maquette-connection ctx
+    (lambda (conn)
+      (define dbi-conn (maquette-connection-dbi-connection conn))
+      (maquette-delete dbi-conn template))))
+
+)
