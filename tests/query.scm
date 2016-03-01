@@ -156,16 +156,21 @@
 		     :last-name "Kato" :address a2)))
       (test-equal "maquette-insert (2)" 1 (maquette-insert conn p2))
       (test-assert "generated id" 
-		   (not (eqv? (slot-ref a 'id) (slot-ref a2 'id))))))
+		   (not (eqv? (slot-ref a 'id) (slot-ref a2 'id)))))
+
+    ;; Creates one more record shares address id with other record.
+    (let ((p3 (make <person> :id 4 :first-name "Takashi ext"
+		    :last-name "Kato" :address a)))
+      (test-equal "maquette-insert (4)" 1 (maquette-insert conn p3))))
 
   (let* ((a (make <address> :city "Den Haag"))
 	 (p (make <person> :id 3 :first-names "Takashi Bla"
 		  :last-name "Kato" :address a)))
     (test-equal "maquette-insert (3)" 1 (maquette-insert conn p)))
   
-  (test-equal "maquette-select (all)" 3
+  (test-equal "maquette-select (all)" 4
 	      (length (maquette-select conn <person>)))
-  (test-equal "maquette-select (sub querying)" 2 
+  (test-equal "maquette-select (sub querying)" 3
 	      (length (maquette-select conn <person>
 		       `(in address ,(make <address> :city "Leiden")))))
 
@@ -178,7 +183,7 @@
 
   (test-equal "maquette-delete (1)" 1
 	      (maquette-delete conn (make <person> :id 3)))
-  (test-equal "maquette-delete (2)" 2
+  (test-equal "maquette-delete (2)" 3
 	      (maquette-delete conn (make <person> :last-name "Kato")))
 
   (dbi-close conn)

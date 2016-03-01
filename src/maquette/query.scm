@@ -43,6 +43,7 @@
 	    maquette-build-delete-statement
 	    )
     (import (rnrs)
+	    (rnrs mutable-pairs)
 	    (sagittarius) ;; for reverse!
 	    (clos core)
 	    (clos user)
@@ -220,14 +221,20 @@
 		       (lambda (delayed)
 			 (case (car delayed)
 			   ((foreign)
-			    (let ((s (cdr delayed)))
-			      (vector-set! s 1 (acons v obj (vector-ref s 1)))))
+			    (let* ((s (cdr delayed))
+				   (l (vector-ref s 1)))
+			      (cond ((assoc v l) =>
+				     (lambda (slot)
+				       (set-cdr! slot (cons obj (cdr slot)))))
+				    (else
+				     (vector-set! s 1 
+						  (acons v (list obj) l))))))
 			   ;; TODO collection
 			   (else (error 'internal "unknown")))))
 		      ((maquette-column-foreign-key? spec) => 
 		       (lambda (key)
 			 (hashtable-set! delaying slot 
-			   (cons 'foreign `#(,key ((,v . ,obj)))))))
+			   (cons 'foreign `#(,key ((,v ,obj)))))))
 		      ;; TODO collections (one to many)
 		      (else (slot-set! obj slot v)))))
 	    (loop (+ i 1))))))
@@ -254,7 +261,9 @@
 	    ;; number but just in case.
 	    (cond ((assoc id values) =>
 		   (lambda (slot) 
-		     (slot-set! (cdr slot) this-slot o)))))
+		     (for-each (lambda (this)
+				 (slot-set! this this-slot o))
+			       (cdr slot))))))
 	  (loop (cdr r))))))
       
   ;; TODO maybe we want to do caching prepared statement?
