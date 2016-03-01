@@ -45,6 +45,7 @@
     (import (rnrs)
 	    (rnrs mutable-pairs)
 	    (sagittarius) ;; for reverse!
+	    (sagittarius control) 
 	    (clos core)
 	    (clos user)
 	    (dbi)
@@ -67,41 +68,41 @@
 	       (constraints '()))
       (if (null? specification)
 	  (values (reverse! columns) (reverse! constraints))
-	  (match (car specification)
-	    ((col _ type constraint ...)
-	     (let ()
-	       (define (build-foreign-key spec)
-		 (let ((class (car spec))
-		       (key (cadr spec)))
-		   `((constraint
-		      (foreign-key (,col)
-				   (references ,(maquette-table-name class)
-					       ,(maquette-lookup-column-name
-						 class key)))))))
-	       ;; boolean get
-	       (define (get key)
-		 (cond ((assq key constraint) => 
-			(lambda (slot) (cond ((cadr slot)) (else '()))))
-		       (else '())))
-	       (define (getb key r)
-		 (if (null? (get key)) '() r))
-	       (loop 
-		(cdr specification)
-		(cons `(,col ,type
-			     ,@(getb :not-null? '((constraint not-null)))
-			     ,@(get :default))
-		      columns)
-		(let ((primary (getb :primary-key 
-				     `((constraint (primary-key ,col)))))
-		      (foreign (cond ((get :foreign-key) => 
-				      (lambda (s)
-					(if (null? s) 
-					    '()
-					    (build-foreign-key s))))
-				     (else ())))
-		      (unique (getb :unique `((constraint (unique ,col))))))
-		  ;; FIXME duplicate primary key won't be detected
-		  `(,@primary ,@foreign ,@unique ,@constraints)))))))))
+	  (let ((spec (car specification)))
+	    (if (or (maquette-column-one-to-many? spec)
+		    (maquette-column-many-to-many? spec))
+		(loop (cdr specification) columns constraints)
+		(let ((primary-key (maquette-column-primary-key? spec))
+		      (foreign-key (maquette-column-foreign-key? spec))
+		      (not-null (maquette-column-not-null? spec))
+		      (unique (maquette-column-unique? spec))
+		      (default (maquette-column-default? spec))
+		      (col (maquette-column-name spec))
+		      (type (maquette-column-type spec)))
+		  (define (build-foreign-key spec)
+		    (let ((class (car spec))
+			  (key (cadr spec)))
+		      `((constraint
+			 (foreign-key (,col)
+				      (references ,(maquette-table-name class)
+						  ,(maquette-lookup-column-name
+						    class key)))))))
+		  (loop (cdr specification)
+			(cons `(,col 
+				,type
+				,@(if not-null '((constraint not-null)) '())
+				,@(if default default '()))
+			      columns)
+			`(,@(if primary-key 
+				      `((constraint (primary-key ,col))) 
+				      '())
+			  ,@(if foreign-key
+				(build-foreign-key foreign-key)
+				'())
+			  ,@(if unique 
+				`((constraint (unique ,col)))
+				'())
+			  ,@constraints))))))))
   (let-values (((col constraints) (parse-spec specification)))
     `(create-table 
       ,(maquette-table-name class)
@@ -249,25 +250,33 @@
 	    (loop (dbi-fetch! query) (cons (map-query1 columns q obj) r)))
 	  (reverse! r)))))
 
-(define (maquette-select conn class :optional (condition #f))
+(define (maquette-select-inner conn class condition loaded)
+  (define primary-key (maquette-table-primary-key-specification class))
+  (define pkey-slot (maquette-column-slot-name primary-key))
+
   (define (handle-foreign-key this-slot value)
     (let* ((key (vector-ref value 0))
 	   (values  (vector-ref value 1))
 	   (slot (cadr key))
-	   (v* (map car values)))
-      (let loop ((r (maquette-select conn (car key) `(in ,slot ,@v*))))
-	(unless (null? r)
-	  (let* ((o (car r))
-		 (id (slot-ref o slot)))
-	    ;; never heard of foreign key or primary key to be non
-	    ;; number but just in case.
-	    (cond ((assoc id values) =>
-		   (lambda (slot) 
-		     (for-each (lambda (this)
-				 (slot-set! this this-slot o))
-			       (cdr slot))))))
-	  (loop (cdr r))))))
-      
+	   (v* (filter-map 
+		(lambda (v) 
+		  (and (not (hashtable-contains? loaded 
+						 (list (car key) (car v))))
+		       (car v))) values)))
+      (unless (null? v*)
+	(let loop ((r (maquette-select-inner conn (car key) 
+					     `(in ,slot ,@v*) loaded)))
+	  (unless (null? r)
+	    (let* ((o (car r))
+		   (id (slot-ref o slot)))
+	      ;; never heard of foreign key or primary key to be non
+	      ;; number but just in case.
+	      (cond ((assoc id values) =>
+		     (lambda (slot) 
+		       (for-each (lambda (this)
+				   (slot-set! this this-slot o))
+				 (cdr slot))))))
+	    (loop (cdr r)))))))
   ;; TODO maybe we want to do caching prepared statement?
   (let* ((queue (if condition (list-queue) #f))
 	 (ssql (maquette-build-select-statement class condition queue))
@@ -282,15 +291,50 @@
 	;; To fix this, we need to make all DBD implementations
 	;; not to close prepared statement.
 	(dbi-close q)
+
 	;; now mapping foreign keys
 	(hashtable-for-each
 	 (lambda (slot value)
 	   (case (car value)
-	     ((foreign) (handle-foreign-key slot (cdr value)))
+	     ((foreign) 
+	      (handle-foreign-key slot (cdr value)))
 	     (else (error 'maquette-select "unknown"))))
 	 delaying)
+
+	;; handling collection if there is
+	(let loop ((specs (maquette-table-column-specifications class)))
+	  (unless (null? specs)
+	    (cond ((maquette-column-one-to-many? (car specs)) =>
+		   (lambda (other)
+		     (dolist (this r)
+		       (let ((id (slot-ref this pkey-slot)))
+			 (hashtable-set! loaded (list class id) #t)
+			 (let ((r (maquette-select-inner
+				   conn other 
+				   `(= ,(find-foreign-key other class) ,id)
+				   loaded)))
+			   (slot-set! this
+				      (maquette-column-slot-name (car specs))
+				      r))))))
+		  ;; TODO many-to-one
+		  )
+	    (loop (cdr specs))))
 	r))))
 
+(define (maquette-select conn class :optional (condition #f))
+  (maquette-select-inner conn class condition (make-equal-hashtable)))
+
+(define (find-foreign-key target this)
+  (define specs (maquette-table-column-specifications target))
+  (let loop ((specs specs))
+    (if (null? specs)
+	(error 'maquette-insert 
+	       "class referred by :one-to-many keyword must have :foreign-key"
+	       target)
+	(cond ((and-let* ((fkey (maquette-column-foreign-key? (car specs)))
+			  ( (eq? (car fkey) this)))
+		 (maquette-column-slot-name (car specs))))
+	      (else (loop (cdr specs)))))))
 ;;; INSERT
 (define (maquette-generator expression)
   (define sqls 
@@ -339,7 +383,7 @@
 		      ":generator is specified but slot is set" object)
 	       (slot-ref object (cadr primary-key))))))
 
-  (define (handle-slots object slots)
+  (define (handle-slots object slots delayed)
     (define (find-primary-key o)
       (define class (class-of o))
       (maquette-table-primary-key-specification class))
@@ -372,7 +416,17 @@
 			(error 'maquette-insert 
 			       "Object doesn't have foreign-key nor primary key"
 			       o)))))
-	      ((pair? o)   (error 'maquette-insert "not supported yet" o))
+	      ((pair? o)
+	       (cond ((maquette-column-one-to-many? spec) =>
+		      (lambda (c)
+			(let ((fkey (find-foreign-key c class)))
+			  (for-each (lambda (v)
+				      (slot-set! v fkey object)
+				      (list-queue-add-back! delayed v)) o)
+			  #f)))
+		     (else
+		      (error 'maquette-insert ":many-to-many not supported yet"
+			     o))))
 	      ((vector? o) (error 'maquette-insert "not supported yet" o))
 	      ((maquette-column-primary-key? spec) #f)
 	      ;; must be something bindable
@@ -385,8 +439,9 @@
 	   class))
 
   (and-let* ((id (generate-next-id object primary-key))
+	     (queue (list-queue))
 	     (col&vals (cons (cons (maquette-column-name primary-key) id)
-			     (handle-slots object slots)))
+			     (handle-slots object slots queue)))
 	     (ssql (maquette-build-insert-statement class (map car col&vals)))
 	     (stmt (dbi-prepare conn (ssql->sql ssql))))
     ;; bind parameter
@@ -397,6 +452,8 @@
     (let ((r (dbi-execute! stmt)))
       (dbi-close stmt)
       (unless (zero? r) (slot-set! object (cadr primary-key) id))
+      (unless (list-queue-empty? queue)
+	(for-each (cut maquette-insert conn <>) (list-queue-list queue)))
       r)))
 
 ;;; UPDATE

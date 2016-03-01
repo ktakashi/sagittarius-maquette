@@ -1,5 +1,6 @@
 (import (rnrs)
 	(sagittarius)
+	(clos user)
 	(srfi :64))
 
 ;; these are used everywhere so make it separate
@@ -30,5 +31,9 @@
 (test-equal "primary key specification (person)" 
 	    '(id id bigint (:primary-key #t))
 	    (maquette-table-primary-key-specification <person>))
+
+(let ((order (maquette-lookup-column-specification <customer> 'order)))
+  (test-assert (is-a? (maquette-column-one-to-many? order) <class>)))
+
 
 (test-end)

@@ -35,3 +35,17 @@
 		 (list name (slot-ref o name))
 		 (list name 'unbound)))) (class-slots (class-of o))))
   (format out "#<person ~s>" (collect-slot o)))
+
+(define-class <customer> ()
+  ((id :init-keyword :id :primary-key #t :sql-type 'bigint)
+   (who :init-keyword :who :foreign-key (list <person> 'id))
+   ;; one-to-many can have class or thunk returns class
+   (order :init-keyword :customer :one-to-many (lambda () <order>)))
+  :metaclass <maquette-table-meta>)
+
+(define-class <order> ()
+  ((id :init-keyword :id :primary-key #t :sql-type 'bigint)
+   (amount :init-keyword :amount :sql-type 'bigint)
+   (customer :init-keyword :customer :foreign-key (list <customer> 'id)))
+  :metaclass <maquette-table-meta>
+  :table-name 'order_table)

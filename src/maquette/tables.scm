@@ -48,6 +48,8 @@
 	    maquette-column-not-null?
 	    maquette-column-default?
 	    maquette-column-generator?
+	    maquette-column-one-to-many?
+	    maquette-column-many-to-many?
 	    )
     (import (rnrs)
 	    (sagittarius)
@@ -85,25 +87,40 @@
 
 ;; returns 
 (define (maquette-table-columns class)
-  (map (cut take <> 2)
-       (or (slot-ref class 'columns)
-	   (maquette-table-column-specifications class))))
+  (filter-map (lambda (s) 
+		(and (not (maquette-column-one-to-many? s))
+		     (not (maquette-column-many-to-many? s))
+		     (take s 2)))
+	      (or (slot-ref class 'columns)
+		  (maquette-table-column-specifications class))))
 
 ;; only needed for create table statement so no cache
 (define (slot-definition->column-specification slot)
+  (define (call p)
+    (if (procedure? p)
+	(p)
+	p))
   (define (get-constraints slot)
+    ;; FIXME looks ugly...
     (let ((primary-key (slot-definition-option slot :primary-key #f))
 	  (foreign-key (slot-definition-option slot :foreign-key #f))
 	  (unique (slot-definition-option slot :unique #f))
 	  (not-null? (slot-definition-option slot :not-null? #f))
 	  (default (slot-definition-option slot :default #f))
-	  (generator (slot-definition-option slot :generator #f)))
-      `(,@(if primary-key `((:primary-key ,primary-key)) '())
-	,@(if foreign-key `((:foreign-key ,foreign-key)) '())
-	,@(if unique `((:unique ,unique)) '())
-	,@(if not-null? `((:not-null? ,not-null?)) '())
-	,@(if default `((:default ,default)) '())
-	,@(if generator `((:generator ,generator)) '()))))
+	  (generator (slot-definition-option slot :generator #f))
+	  (one-to-many (call (slot-definition-option slot :one-to-many #f)))
+	  (many-to-many (call (slot-definition-option slot :many-to-many #f))))
+      `(,@(if primary-key `((:primary-key  ,primary-key))  '())
+	,@(if foreign-key `((:foreign-key  ,foreign-key))  '())
+	,@(if unique      `((:unique       ,unique))       '())
+	,@(if not-null?   `((:not-null?    ,not-null?))    '())
+	,@(if default     `((:default      ,default))      '())
+	,@(if generator   `((:generator    ,generator))    '())
+	,@(if one-to-many `((:one-to-many  ,one-to-many))  '())
+	,@(if many-to-many`((:many-to-many ,many-to-many)) '())
+	)
+      ))
+    
   (let* ((slot-name (slot-definition-name slot))
 	 (column-name (string->symbol
 		       (slot-definition-option 
@@ -146,15 +163,22 @@
 (define (maquette-column-slot-name spec) (cadr spec))
 (define (maquette-column-type spec) (caddr spec))
 
-(define (maquette-column-primary-key? spec) (assq :primary-key (cddr spec)))
+(define (maquette-column-primary-key? spec) 
+  (cond ((assq :primary-key (cddr spec)) => cadr) (else #f)))
 (define (maquette-column-foreign-key? spec) 
   (cond ((assq :foreign-key (cddr spec)) => cadr) (else #f)))
-(define (maquette-column-unique? spec) (assq :unique (cddr spec)))
-(define (maquette-column-not-null? spec) (assq :not-null? (cddr spec)))
+(define (maquette-column-unique? spec) 
+  (cond ((assq :unique (cddr spec)) => cadr) (else #f)))
+(define (maquette-column-not-null? spec) 
+  (cond ((assq :not-null? (cddr spec)) => cadr) (else #f)))
 (define (maquette-column-default? spec) 
   (cond ((assq :default (cddr spec)) => cadr) (else #f)))
 (define (maquette-column-generator? spec) 
   (cond ((assq :generator (cddr spec)) => cadr) (else #f)))
+(define (maquette-column-one-to-many? spec) 
+  (cond ((assq :one-to-many (cddr spec)) => cadr) (else #f)))
+(define (maquette-column-many-to-many? spec) 
+  (cond ((assq :many-to-many (cddr spec)) => cadr) (else #f)))
 
 (define (maquette-table-primary-key-specification class)
   (define (find-primary-spec)

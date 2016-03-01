@@ -10,7 +10,6 @@
 (include "class-defs.scm")
 
 (test-begin "Maquette - Query")
-
 ;; these are only for my convenience
 (test-equal "SQL building (create addres)"
 	    '(create-table address 
@@ -161,8 +160,8 @@
     ;; Creates one more record shares address id with other record.
     (let ((p3 (make <person> :id 4 :first-name "Takashi ext"
 		    :last-name "Kato" :address a)))
-      (test-equal "maquette-insert (4)" 1 (maquette-insert conn p3))))
-
+      (test-equal "maquette-insert (4)" 1 (maquette-insert conn p3)))
+    )
   (let* ((a (make <address> :city "Den Haag"))
 	 (p (make <person> :id 3 :first-names "Takashi Bla"
 		  :last-name "Kato" :address a)))
@@ -185,6 +184,35 @@
 	      (maquette-delete conn (make <person> :id 3)))
   (test-equal "maquette-delete (2)" 3
 	      (maquette-delete conn (make <person> :last-name "Kato")))
+
+  ;; one-to-many
+  (dbi-execute-using-connection! 
+   conn (ssql->sql (maquette-build-create-statement <customer>)))
+  (dbi-execute-using-connection! 
+   conn (ssql->sql (maquette-build-create-statement <order>)))
+  (let* ((a (car (maquette-select conn <address> '(= city "Leiden"))))
+	 (p (make <person> :id 1 :first-names "Takashi"
+		  :last-name "Kato" :address a))
+	 (customer (make <customer> :who p :id 1))
+	 (order1 (make <order> :id 1 :amount 100 :customer customer))
+	 (order2 (make <order> :id 2 :amount 150 :customer customer)))
+    (slot-set! customer 'order (list order1 order2))
+    (test-equal "insert customer" 1 (maquette-insert conn customer))
+    (test-equal "select order 1" 2 (length (maquette-select conn <order>)))
+    (let ((customer (maquette-select conn <customer>)))
+      (test-equal "select customer 1" 1 (length customer))
+      (test-equal "select customer order" 2
+		  (length (slot-ref (car customer) 'order)))
+      (let ((orders (list-sort (lambda (a b)
+				 (< (slot-ref a 'id) (slot-ref b 'id)))
+			       (slot-ref (car customer) 'order))))
+	(test-equal "order detail 1" '(1 100)
+		    (list (slot-ref (car orders) 'id)
+			  (slot-ref (car orders) 'amount)))
+	(test-equal "order detail 2" '(2 150)
+		    (list (slot-ref (cadr orders) 'id)
+			  (slot-ref (cadr orders) 'amount)))))
+    )
 
   (dbi-close conn)
   (when (file-exists? db-file) (guard (e (else #t))(delete-file db-file)))
