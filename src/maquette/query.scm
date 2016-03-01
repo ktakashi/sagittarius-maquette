@@ -197,7 +197,7 @@
 ;; query = dbi query
 ;; this is an internal procedure to map query 
 ;; 
-(define (maquette-map-query query class delaying)
+(define (maquette-map-query query class delaying loaded)
   (define slots (class-slots class))
   (define slot&columns
     (map (lambda (s) 
@@ -234,7 +234,10 @@
 						  (acons v (list obj) l))))))
 			   ;; TODO collection
 			   (else (error 'internal "unknown")))))
-		      ((maquette-column-foreign-key? spec) => 
+		      ((and-let* ((fkey (maquette-column-foreign-key? spec))
+				  ( (not (hashtable-contains? 
+					  loaded (list (car fkey) v)))))
+			 fkey)=> 
 		       (lambda (key)
 			 (hashtable-set! delaying slot 
 			   (cons 'foreign `#(,key ((,v ,obj)))))))
@@ -252,20 +255,15 @@
 
 (define (maquette-select-inner conn class condition loaded)
   (define primary-key (maquette-table-primary-key-specification class))
-  (define pkey-slot (maquette-column-slot-name primary-key))
+  (define pslot (maquette-column-slot-name primary-key))
 
   (define (handle-foreign-key this-slot value)
     (let* ((key (vector-ref value 0))
 	   (values  (vector-ref value 1))
 	   (slot (cadr key))
-	   (v* (filter-map 
-		(lambda (v) 
-		  (and (not (hashtable-contains? loaded 
-						 (list (car key) (car v))))
-		       (car v))) values)))
-      (unless (null? v*)
-	(let loop ((r (maquette-select-inner conn (car key) 
-					     `(in ,slot ,@v*) loaded)))
+	   (v* (map car values)))
+      (let loop ((r (maquette-select-inner conn (car key) 
+					   `(in ,slot ,@v*) loaded)))
 	  (unless (null? r)
 	    (let* ((o (car r))
 		   (id (slot-ref o slot)))
@@ -276,7 +274,7 @@
 		       (for-each (lambda (this)
 				   (slot-set! this this-slot o))
 				 (cdr slot))))))
-	    (loop (cdr r)))))))
+	    (loop (cdr r))))))
   ;; TODO maybe we want to do caching prepared statement?
   (let* ((queue (if condition (list-queue) #f))
 	 (ssql (maquette-build-select-statement class condition queue))
@@ -285,7 +283,7 @@
     (guard (e (else (dbi-close stmt) (raise e)))
       (let* ((q (dbi-execute-query! stmt))
 	     (delaying (make-eq-hashtable))
-	     (r (maquette-map-query q class delaying)))
+	     (r (maquette-map-query q class delaying loaded)))
 	;; bad design, this closes prepared statement as well
 	;; then how can we reuse it?
 	;; To fix this, we need to make all DBD implementations
@@ -306,16 +304,26 @@
 	  (unless (null? specs)
 	    (cond ((maquette-column-one-to-many? (car specs)) =>
 		   (lambda (other)
-		     (dolist (this r)
-		       (let ((id (slot-ref this pkey-slot)))
-			 (hashtable-set! loaded (list class id) #t)
-			 (let ((r (maquette-select-inner
-				   conn other 
-				   `(= ,(find-foreign-key other class) ,id)
-				   loaded)))
+		     (let* ((fkey (find-foreign-key other class))
+			    (c (maquette-select-inner conn other
+				`(in ,fkey
+				     ,@(map (lambda (this) 
+					      (let ((id (slot-ref this pslot)))
+						(hashtable-set! 
+						 loaded (list class id) #t)
+						id)) r))
+				loaded)))
+		       ;; foreign key slot is mere number (or something else
+		       ;; but object)
+		       (dolist (this r)
+			 (let ((id (slot-ref this pslot)))
 			   (slot-set! this
 				      (maquette-column-slot-name (car specs))
-				      r))))))
+				      (filter-map (lambda (r)
+						    (and (= (slot-ref r fkey)
+							    id)
+							 r))
+						  c)))))))
 		  ;; TODO many-to-one
 		  )
 	    (loop (cdr specs))))
