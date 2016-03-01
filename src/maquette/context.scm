@@ -30,6 +30,7 @@
 
 (library (maquette context)
     (export make-maquette-context
+	    maquette-context-release!
 	    maquette-context?
 	    maquette-max-connection-count
 	    call-with-maquette-connection
@@ -76,6 +77,10 @@
 (define *current-connection* (make-parameter #f))
 
 (define (maquette-context? o) (is-a? o <maquette-context>))
+
+(define (maquette-context-release! ctx)
+  (maquette-connection-pool-release! (~ ctx 'pool)))
+
 (define (maquette-max-connection-count ctx)
   (maquette-connection-pool-max-connection-count (~ ctx 'pool)))
 

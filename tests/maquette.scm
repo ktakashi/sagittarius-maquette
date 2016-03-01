@@ -63,10 +63,13 @@
     (test-equal 1 (length (maquette-query ctx <address>
 					  `(= id ,(slot-ref a 'id)))))
     (test-equal 1 (length (maquette-query ctx <person> '(= id 1)))))
-    (with-maquette-transaction ctx
+  (with-maquette-transaction ctx
       (test-equal 1 (maquette-remove ctx (make <person> :id 1))))
+  
+  (test-assert (null? (maquette-query ctx <person> '(= id 1))))
+  
+  (test-assert (maquette-context-release! ctx))
 
-    (test-assert (null? (maquette-query ctx <person> '(= id 1))))
   (when (file-exists? db-file) (delete-file db-file))
   )
  (else (display "(dbd sqlite3) is required for test" (current-error-port))

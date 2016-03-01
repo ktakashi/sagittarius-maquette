@@ -30,6 +30,7 @@
 
 (library (maquette)
     (export make-maquette-context
+	    maquette-context-release!
 	    maquette-context?
 	    maquette-max-connection-count
 
