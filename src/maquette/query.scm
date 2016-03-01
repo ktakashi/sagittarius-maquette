@@ -200,10 +200,12 @@
 
   (define (map-query1 columns q obj)
     (define (find-slot i)
-      (define col (string->symbol (vector-ref columns i)))
+      (define col (vector-ref columns i))
       (let loop ((slots slots))
-	(cond ((null? slots) col) ;; default
-	      ((eq? (slot-definition-option (car slots) :column-name #f) col)
+	(cond ((null? slots) (string->symbol col)) ;; default
+	      ((string=? (string-foldcase
+			  (slot-definition-option (car slots) :column-name ""))
+			 col)
 	       (slot-definition-name (car slots)))
 	      (else (loop (cdr slots))))))
     (define len (vector-length columns))
@@ -231,7 +233,7 @@
 	    (loop (+ i 1))))))
 
   ;; assume columns are mapped to query result properly
-  (let* ((columns (dbi-columns query)))
+  (let* ((columns (vector-map string-foldcase (dbi-columns query))))
     (let loop ((q (dbi-fetch! query)) (r '()))
       (if q
 	  (let ((obj (make class)))

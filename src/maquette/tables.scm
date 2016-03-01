@@ -105,8 +105,9 @@
 	,@(if default `((:default ,default)) '())
 	,@(if generator `((:generator ,generator)) '()))))
   (let* ((slot-name (slot-definition-name slot))
-	 (column-name (slot-definition-option 
-		       slot :column-name slot-name))
+	 (column-name (string->symbol
+		       (slot-definition-option 
+			slot :column-name (symbol->string slot-name))))
 	 (sql-type (slot-definition-option slot :sql-type 'int))
 	 (constraints (get-constraints slot)))
     (cons* column-name slot-name sql-type constraints)))
