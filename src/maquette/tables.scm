@@ -126,12 +126,14 @@
 	  (else (loop (cdr c))))))
 
 (define (maquette-lookup-column-specification class slot)
-  (let loop ((slots (class-slots class)))
-    (cond ((null? slot) 
-	   (error 'maquette-lookup-column-specification "no slot" class slot))
-	  ((eq? (slot-definition-name (car slots)) slot)
-	   (slot-definition->column-specification (car slots)))
-	  (else (loop (cdr slots))))))
+  (define columns (maquette-table-column-specifications class))
+  (let loop ((slots columns))
+    (if (null? slots)
+	(error 'maquette-lookup-column-specification "no slot" class slot)
+	(let ((s (car slots)))
+	  (if (eq? (cadr s) slot)
+	      s
+	      (loop (cdr slots)))))))
 
 (define (maquette-find-column-specification class pred)
   (let loop ((columns (maquette-table-column-specifications class)))

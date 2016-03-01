@@ -198,16 +198,18 @@
 ;; 
 (define (maquette-map-query query class delaying)
   (define slots (class-slots class))
+  (define slot&columns
+    (map (lambda (s) 
+	   (cons (slot-definition-name s)
+		 (string-foldcase (slot-definition-option s :column-name ""))))
+	 slots))
 
   (define (map-query1 columns q obj)
     (define (find-slot i)
       (define col (vector-ref columns i))
-      (let loop ((slots slots))
+      (let loop ((slots slot&columns))
 	(cond ((null? slots) (string->symbol col)) ;; default
-	      ((string=? (string-foldcase
-			  (slot-definition-option (car slots) :column-name ""))
-			 col)
-	       (slot-definition-name (car slots)))
+	      ((string=? (cdar slots) col) (caar slots))
 	      (else (loop (cdr slots))))))
     (define len (vector-length columns))
     (let loop ((i 0))
