@@ -96,10 +96,10 @@
       obj)))
 
 ;; TODO should we check the primary key slot for safety?
-(define (maquette-remove ctx template)
+(define (maquette-remove ctx template :key (cascade? #f))
   (call-with-maquette-connection ctx
     (lambda (conn)
       (define dbi-conn (maquette-connection-dbi-connection conn))
-      (maquette-delete dbi-conn template))))
+      (maquette-delete dbi-conn template :cascade? cascade?))))
 
 )
