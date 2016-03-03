@@ -300,33 +300,32 @@
 	 delaying)
 
 	;; handling collection if there is
-	(let loop ((specs (maquette-table-column-specifications class)))
-	  (unless (null? specs)
-	    (cond ((maquette-column-one-to-many? (car specs)) =>
+	(unless (null? r)
+	  (dolist (spec (maquette-table-column-specifications class))
+	    (cond ((maquette-column-one-to-many? spec) =>
 		   (lambda (other)
 		     (let* ((fkey (find-foreign-key other class))
 			    (c (maquette-select-inner conn other
-				`(in ,fkey
-				     ,@(map (lambda (this) 
-					      (let ((id (slot-ref this pslot)))
-						(hashtable-set! 
-						 loaded (list class id) #t)
-						id)) r))
-				loaded)))
+				 `(in ,fkey
+				      ,@(map (lambda (this) 
+					       (let ((id (slot-ref this pslot)))
+						 (hashtable-set! 
+						  loaded (list class id) #t)
+						 id)) r))
+				 loaded)))
 		       ;; foreign key slot is mere number (or something else
 		       ;; but object)
 		       (dolist (this r)
 			 (let ((id (slot-ref this pslot)))
 			   (slot-set! this
-				      (maquette-column-slot-name (car specs))
+				      (maquette-column-slot-name spec)
 				      (filter-map (lambda (r)
 						    (and (= (slot-ref r fkey)
 							    id)
 							 r))
 						  c)))))))
 		  ;; TODO many-to-one
-		  )
-	    (loop (cdr specs))))
+		  )))
 	r))))
 
 (define (maquette-select conn class :optional (condition #f))
@@ -476,15 +475,36 @@
 (define (maquette-update conn object) 
   (define class (class-of object))
   (define primary-key (maquette-table-primary-key-specification class))
+  (define pslot (maquette-column-slot-name primary-key))
 
-  (define (collect-columns o q)
+  (define (collect-columns o q o2m)
     ;; we don't allow to change id, if you want to do it
     ;; do delete -> insert.
-    (filter-map (lambda (s) 
-		  (and (not (eq? s (maquette-column-slot-name primary-key)))
-		       (slot-bound? o s)
-		       (list-queue-add-back! q (slot-ref o s))
-		       (maquette-lookup-column-name class s)))
+    (filter-map 
+     (lambda (s)
+       (and-let* (( (not (eq? s pslot)) )
+		  ( (slot-bound? o s) )
+		  (o2 (slot-ref o s))
+		  (spec (maquette-lookup-column-specification 
+			 class s))
+		  (col (maquette-column-name spec)))
+	 (cond ((maquette-column-one-to-many? spec)
+		(for-each (cut list-queue-add-back! o2m <>) o2)
+		#f)
+	       ((is-a? (class-of o2) <maquette-table-meta>)
+		(cond ((maquette-column-foreign-key? spec) =>
+		       (lambda (fkey)
+			 (and-let* (( (slot-bound? o2 (cadr fkey)) )
+				    (v (slot-ref o2 (cadr fkey))))
+			   (list-queue-add-back! q v)
+			   col)))
+		      (else
+		       (error 'maquette-update
+			      "The value is not association of given object"
+			      o object))))
+	       (else
+		(list-queue-add-back! q o2)
+		col))))
 		(map slot-definition-name (class-slots class))))
   (define (create-condition o)
     (let ((pkey-slot (maquette-column-slot-name primary-key)))
@@ -497,13 +517,15 @@
 			  `(= ,slot ,(slot-ref o slot))))
 		   (map slot-definition-name (class-slots class)))))))
   (let* ((value (list-queue))
-	 (columns (collect-columns object value))
+	 (one-to-many (list-queue))
+	 (columns (collect-columns object value one-to-many))
 	 (condition (create-condition object))
 	 (ssql (maquette-build-update-statement class columns condition value))
 	 (stmt (apply dbi-prepare conn (ssql->sql ssql) 
 		      (list-queue-list value))))
     (let ((r (dbi-execute! stmt)))
       (dbi-close stmt)
+      (for-each (cut maquette-update conn <>) (list-queue-list one-to-many))
       r)))
 
 ;;; DELETE
@@ -514,20 +536,42 @@
 		      `((where ,(build-condition class condition collect?)))
 		      '())))
 
-(define (maquette-delete conn object)
+(define (maquette-delete conn object :key (cascade? #f))
   (define class (class-of object))
   (define primary-key (maquette-table-primary-key-specification class))
-
+  (define pkey-slot (maquette-column-slot-name primary-key))
   (define (create-condition o)
-    (let ((pkey-slot (maquette-column-slot-name primary-key)))
-      (if (slot-bound? o pkey-slot)
-	  `(= ,pkey-slot ,(slot-ref o pkey-slot))
-	  ;; ugh
-	  `(and ,@(filter-map 
-		   (lambda (slot)
-		     (and (slot-bound? o slot)
-			  `(= ,slot ,(slot-ref o slot))))
-		   (map slot-definition-name (class-slots class)))))))
+    (if (slot-bound? o pkey-slot)
+	`(= ,pkey-slot ,(slot-ref o pkey-slot))
+	;; ugh
+	(let ((c (filter-map 
+		  (lambda (slot)
+		    (let ((spec (maquette-lookup-column-specification
+				 class slot)))
+		      (and (not (maquette-column-one-to-many? spec))
+			   (slot-bound? o slot)
+			   `(= ,slot ,(slot-ref o slot)))))
+		  (map slot-definition-name (class-slots class)))))
+	  (cond ((null? c) #f) ;;what?
+		((null? (cdr c)) (car c))
+		(else `(and ,@c))))))
+
+  (when cascade?
+    (let loop ((specs (maquette-table-column-specifications class)))
+      (unless (null? specs)
+	(let ((spec (car specs)))
+	  (cond ((maquette-column-one-to-many? spec)
+		 (let ((o (slot-ref object (maquette-column-slot-name spec))))
+		   ;; it must be the list of the same object.
+		   (unless (null? o)
+		     (let* ((c (class-of (car o)))
+			    (t (make c))
+			    (fkey (find-foreign-key c class)))
+		       (slot-set! t fkey (slot-ref object pkey-slot))
+		       (maquette-delete conn t :cascade? #t)))))
+		))
+	(loop (cdr specs)))))
+
   (let* ((value (list-queue))
 	 (condition (create-condition object))
 	 (ssql (maquette-build-delete-statement class condition value))

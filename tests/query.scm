@@ -122,7 +122,7 @@
   (when (file-exists? db-file) (delete-file db-file))
 
   (define conn (dbi-connect (format "dbi:sqlite3:database=~a" db-file)
-			    :auto-commit #f))
+			    :auto-commit #t))
 
   ;; prepare tables
   (dbi-execute-using-connection! 
@@ -212,6 +212,24 @@
 	(test-equal "order detail 2" '(2 150)
 		    (list (slot-ref (cadr orders) 'id)
 			  (slot-ref (cadr orders) 'amount)))))
+    (slot-set! order1 'amount 200)
+    (maquette-update conn customer)
+    (let* ((customer (maquette-select conn <customer>))
+	   (orders (list-sort (lambda (a b)
+				(< (slot-ref a 'id) (slot-ref b 'id)))
+			      (slot-ref (car customer) 'order))))
+      (test-equal "order detail 1" '(1 200)
+		  (list (slot-ref (car orders) 'id)
+			(slot-ref (car orders) 'amount)))
+      (test-equal "order detail 2" '(2 150)
+		  (list (slot-ref (cadr orders) 'id)
+			(slot-ref (cadr orders) 'amount))))
+    ;; SQLite3 allow me to delete records referred by other table.
+    ;; so foreign key is just for show...
+    ;;(test-error "foreign key constraint" (maquette-delete conn customer))
+    (maquette-delete conn customer :cascade? #t)
+    (test-assert (null? (maquette-select conn <customer>)))
+    (test-assert (null? (maquette-select conn <order>)))
     )
 
   (dbi-close conn)
