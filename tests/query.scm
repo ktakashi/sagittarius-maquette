@@ -1,6 +1,7 @@
 (import (rnrs)
 	(sagittarius)
 	(maquette query)
+	(maquette connection)
 	(dbi)
 	(clos user)
 	(srfi :117)
@@ -121,19 +122,21 @@
   (define db-file "test.db")
   (when (file-exists? db-file) (delete-file db-file))
 
-  (define conn (dbi-connect (format "dbi:sqlite3:database=~a" db-file)
-			    :auto-commit #t))
+  (define conn (open-maquette-connection
+		(format "dbi:sqlite3:database=~a" db-file)
+		:auto-commit #t))
+  (define raw-conn (maquette-connection-dbi-connection conn))
 
   ;; prepare tables
   (dbi-execute-using-connection! 
-   conn (ssql->sql (maquette-build-create-statement <address>)))
+   raw-conn (ssql->sql (maquette-build-create-statement <address>)))
   (dbi-execute-using-connection! 
-   conn (ssql->sql (maquette-build-create-statement <person>)))
+   raw-conn (ssql->sql (maquette-build-create-statement <person>)))
   (dbi-execute-using-connection! 
-   conn (ssql->sql '(create-table address_seq ((id int)))))
+   raw-conn (ssql->sql '(create-table address_seq ((id int)))))
   ;; insert initial value
   (dbi-execute-using-connection! 
-   conn (ssql->sql '(insert-into address_seq (id) (values (0)))))
+   raw-conn (ssql->sql '(insert-into address_seq (id) (values (0)))))
 
   ;; inserts some data
   (let* ((a (make <address> :city "Leiden"))
@@ -187,9 +190,9 @@
 
   ;; one-to-many
   (dbi-execute-using-connection! 
-   conn (ssql->sql (maquette-build-create-statement <customer>)))
+   raw-conn (ssql->sql (maquette-build-create-statement <customer>)))
   (dbi-execute-using-connection! 
-   conn (ssql->sql (maquette-build-create-statement <order>)))
+   raw-conn (ssql->sql (maquette-build-create-statement <order>)))
   (let* ((a (car (maquette-select conn <address> '(= city "Leiden"))))
 	 (p (make <person> :id 1 :first-names "Takashi"
 		  :last-name "Kato" :address a))
@@ -232,7 +235,7 @@
     (test-assert (null? (maquette-select conn <order>)))
     )
 
-  (dbi-close conn)
+  (maquette-connection-close! conn)
   (when (file-exists? db-file) (guard (e (else #t))(delete-file db-file)))
 
   )

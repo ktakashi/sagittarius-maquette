@@ -50,6 +50,7 @@
 	    (clos user)
 	    (dbi)
 	    (maquette tables)
+	    (maquette connection)
 	    (util hashtables)
 	    (text sql)
 	    (match)
@@ -278,9 +279,10 @@
   ;; TODO maybe we want to do caching prepared statement?
   (let* ((queue (if condition (list-queue) #f))
 	 (ssql (maquette-build-select-statement class condition queue))
-	 (stmt (apply dbi-prepare conn (ssql->sql ssql)
+	 (stmt (apply maquette-connection-prepared-statement
+		      conn (ssql->sql ssql)
 		      (if queue (list-queue-list queue) '()))))
-    (guard (e (else (dbi-close stmt) (raise e)))
+    (guard (e (else (maquette-connection-close-statement stmt) (raise e)))
       (let* ((q (dbi-execute-query! stmt))
 	     (delaying (make-eq-hashtable))
 	     (r (maquette-map-query q class delaying loaded)))
@@ -288,7 +290,7 @@
 	;; then how can we reuse it?
 	;; To fix this, we need to make all DBD implementations
 	;; not to close prepared statement.
-	(dbi-close q)
+	(maquette-connection-close-statement conn q)
 
 	;; now mapping foreign keys
 	(hashtable-for-each
@@ -352,14 +354,15 @@
 	      (reverse! r)
 	      (loop (cons sql r)))))))
   (lambda (conn)
+    (define dbi-conn (maquette-connection-dbi-connection conn))
     (let loop ((sqls sqls))
       (if (null? (cdr sqls))
-	  (let* ((q (dbi-execute-query-using-connection! conn (car sqls)))
+	  (let* ((q (dbi-execute-query-using-connection! dbi-conn (car sqls)))
 		 (v (dbi-fetch! q)))
 	    (dbi-close q)
 	    (vector-ref v 0))
 	  (begin
-	    (dbi-execute-using-connection! conn (car sqls))
+	    (dbi-execute-using-connection! dbi-conn (car sqls))
 	    (loop (cdr sqls)))))))
 
 (define (maquette-build-insert-statement class columns)
@@ -450,14 +453,15 @@
 	     (col&vals (cons (cons (maquette-column-name primary-key) id)
 			     (handle-slots object slots queue)))
 	     (ssql (maquette-build-insert-statement class (map car col&vals)))
-	     (stmt (dbi-prepare conn (ssql->sql ssql))))
+	     (stmt (maquette-connection-prepared-statement
+		    conn (ssql->sql ssql))))
     ;; bind parameter
     (let loop ((i 1) (col&vals col&vals))
       (unless (null? col&vals)
 	(dbi-bind-parameter! stmt i (cdar col&vals))
 	(loop (+ i 1) (cdr col&vals))))
     (let ((r (dbi-execute! stmt)))
-      (dbi-close stmt)
+      (maquette-connection-close-statement conn stmt)
       (unless (zero? r) (slot-set! object (cadr primary-key) id))
       (unless (list-queue-empty? queue)
 	(for-each (cut maquette-insert conn <>) (list-queue-list queue)))
@@ -521,10 +525,11 @@
 	 (columns (collect-columns object value one-to-many))
 	 (condition (create-condition object))
 	 (ssql (maquette-build-update-statement class columns condition value))
-	 (stmt (apply dbi-prepare conn (ssql->sql ssql) 
+	 (stmt (apply maquette-connection-prepared-statement
+		      conn (ssql->sql ssql) 
 		      (list-queue-list value))))
     (let ((r (dbi-execute! stmt)))
-      (dbi-close stmt)
+      (maquette-connection-close-statement conn stmt)
       (for-each (cut maquette-update conn <>) (list-queue-list one-to-many))
       r)))
 
@@ -575,10 +580,11 @@
   (let* ((value (list-queue))
 	 (condition (create-condition object))
 	 (ssql (maquette-build-delete-statement class condition value))
-	 (stmt (apply dbi-prepare conn (ssql->sql ssql) 
+	 (stmt (apply maquette-connection-prepared-statement
+		      conn (ssql->sql ssql) 
 		      (list-queue-list value))))
     (let ((r (dbi-execute! stmt)))
-      (dbi-close stmt)
+      (maquette-connection-close-statement conn stmt)
       r)))
 
 )

@@ -39,6 +39,8 @@
 	    maquette-connection-start-transaction!
 	    maquette-connection-commit!
 	    maquette-connection-rollback!
+	    maquette-connection-prepared-statement
+	    maquette-connection-close-statement
 
 	    ;; connection pool
 	    make-maquette-connection-pool maquette-connection-pool?
@@ -67,9 +69,19 @@
 		   :reader maquette-connection-dbi-connection)
    ;; for reconnect
    (dsn :init-keyword :dsn)
-   (options :init-keyword :options)))
+   (options :init-keyword :options)
+   ;; for future...
+   (cached-statement :init-value #f)
+   ))
 (define (maquette-connection? o) (is-a? o <maquette-connection>))
-(define (make-maquette-connection dsn . opt) 
+(define (make-maquette-connection dsn
+				  :key (cache-size #f)
+				  :allow-other-keys opt)
+  (define (cache-creation conn)
+    (lambda (sql)
+      (let ((dbi-connection (maquette-connection-dbi-connection conn)))
+	(dbi-prepare dbi-connection sql))))
+
   (make <maquette-connection> :dsn dsn :options opt))
 (define (maquette-connection-open? conn)
   (is-a? (maquette-connection-dbi-connection conn) <dbi-connection>))
@@ -102,6 +114,20 @@
 (define (maquette-connection-rollback! c) 
   (dbi-rollback! (~ c 'dbi-connection)) 
   c)
+
+(define (maquette-connection-prepared-statement c sql . opt)
+  (unless (maquette-connection-open? c)
+    (assertion-violation 'maquette-connection-prepared-statement
+			 "connection is closed" c))
+  (let ((stmt (dbi-prepare (maquette-connection-dbi-connection c) sql)))
+    (let loop ((i 1) (ps opt))
+      (unless (null? ps)
+	(dbi-bind-parameter! stmt i (car ps))
+	(loop (+ i 1) (cdr ps))))
+    stmt))
+
+(define (maquette-connection-close-statement c stmt)
+  (unless (~ c 'cached-statement) (dbi-close stmt)))
 
 ;;; connection pool
 ;; We do very simple connection pooling here. The basic strategy is
