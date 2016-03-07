@@ -282,7 +282,7 @@
 	 (stmt (apply maquette-connection-prepared-statement
 		      conn (ssql->sql ssql)
 		      (if queue (list-queue-list queue) '()))))
-    (guard (e (else (maquette-connection-close-statement stmt) (raise e)))
+    (guard (e (else (maquette-connection-close-statement conn stmt) (raise e)))
       (let* ((q (dbi-execute-query! stmt))
 	     (delaying (make-eq-hashtable))
 	     (r (maquette-map-query q class delaying loaded)))

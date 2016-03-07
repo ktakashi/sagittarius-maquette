@@ -62,6 +62,9 @@
 	    (util concurrent)
 	    (srfi :18)
 	    (srfi :26)
+	    (cache apis)
+	    (cache lru)
+	    (sagittarius comparators)
 	    (dbi))
 
 (define-class <maquette-connection> ()
@@ -70,19 +73,24 @@
    ;; for reconnect
    (dsn :init-keyword :dsn)
    (options :init-keyword :options)
-   ;; for future...
-   (cached-statement :init-value #f)
+   ;; cache object for statements
+   (cache :init-keyword :cache :init-value #f)
    ))
 (define (maquette-connection? o) (is-a? o <maquette-connection>))
 (define (make-maquette-connection dsn
-				  :key (cache-size #f)
+				  :key (cache-type <lru-cache>)
+				       (cache-size 100) ;; default?  
 				  :allow-other-keys opt)
   (define (cache-creation conn)
     (lambda (sql)
       (let ((dbi-connection (maquette-connection-dbi-connection conn)))
 	(dbi-prepare dbi-connection sql))))
 
-  (make <maquette-connection> :dsn dsn :options opt))
+  (make <maquette-connection> :dsn dsn :options opt 
+	:cache (and cache-type (make cache-type
+				 :max-size cache-size
+				 :comparator string-comparator
+				 :on-evict dbi-close))))
 (define (maquette-connection-open? conn)
   (is-a? (maquette-connection-dbi-connection conn) <dbi-connection>))
 
@@ -96,6 +104,8 @@
 
 (define (maquette-connection-close! conn)
   (when (~ conn 'dbi-connection)
+    ;; this also closes statements
+    (when (~ conn 'cache) (cache-clear! (~ conn 'cache)))
     (dbi-close (maquette-connection-dbi-connection conn)))
   (set! (~ conn 'dbi-connection) #f)
   conn)
@@ -119,7 +129,14 @@
   (unless (maquette-connection-open? c)
     (assertion-violation 'maquette-connection-prepared-statement
 			 "connection is closed" c))
-  (let ((stmt (dbi-prepare (maquette-connection-dbi-connection c) sql)))
+  (let* ((cache (~ c 'cache))
+	 (stmt (cond ((and cache (cache-get cache sql)))
+		     (else
+		      (let ((stmt (dbi-prepare 
+				   (maquette-connection-dbi-connection c)
+				   sql)))
+			(when cache (cache-put! cache sql stmt))
+			stmt)))))
     (let loop ((i 1) (ps opt))
       (unless (null? ps)
 	(dbi-bind-parameter! stmt i (car ps))
@@ -127,7 +144,7 @@
     stmt))
 
 (define (maquette-connection-close-statement c stmt)
-  (unless (~ c 'cached-statement) (dbi-close stmt)))
+  (unless (~ c 'cache) (dbi-close stmt)))
 
 ;;; connection pool
 ;; We do very simple connection pooling here. The basic strategy is
