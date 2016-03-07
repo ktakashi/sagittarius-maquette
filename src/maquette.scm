@@ -41,6 +41,7 @@
 	    with-maquette-transaction
 	    maquette-context-in-transaction?
 
+	    maquette-generator
 	    ;; this is needed to create user defined table class
 	    <maquette-table-meta>
 	    )
