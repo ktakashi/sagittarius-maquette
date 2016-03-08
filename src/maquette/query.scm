@@ -256,7 +256,6 @@
 
 (define (maquette-select-inner conn class condition loaded)
   (define primary-key (maquette-table-primary-key-specification class))
-  (define pslot (maquette-column-slot-name primary-key))
 
   (define (handle-foreign-key this-slot value)
     (let* ((key (vector-ref value 0))
@@ -306,6 +305,7 @@
 	  (dolist (spec (maquette-table-column-specifications class))
 	    (cond ((maquette-column-one-to-many? spec) =>
 		   (lambda (other)
+		     (define pslot (maquette-column-slot-name primary-key))
 		     (let* ((fkey (find-foreign-key other class))
 			    (c (maquette-select-inner conn other
 				 `(in ,fkey
