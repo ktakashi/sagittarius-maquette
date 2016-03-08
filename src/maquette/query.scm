@@ -353,7 +353,7 @@
 	  (if (eof-object? sql)
 	      (reverse! r)
 	      (loop (cons sql r)))))))
-  (lambda (conn)
+  (lambda (object conn)
     (define dbi-conn (maquette-connection-dbi-connection conn))
     (let loop ((sqls sqls))
       (if (null? (cdr sqls))
@@ -382,7 +382,7 @@
     (define generator (maquette-column-generator? primary-key))
     (cond ((not (slot-bound? object (cadr primary-key)))
 	   (if generator
-	       (generator conn)
+	       (generator object conn)
 	       (error 'maquette-insert 
 		      "primary key slot is unbound but no :generator" object)))
 	  ;; then you need to set manually
@@ -447,7 +447,6 @@
     (error 'maquette-insert 
 	   "The class of the inserting object doesn't have primary key"
 	   class))
-
   (and-let* ((id (generate-next-id object primary-key))
 	     (queue (list-queue))
 	     (col&vals (cons (cons (maquette-column-name primary-key) id)
