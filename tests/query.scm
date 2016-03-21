@@ -25,32 +25,36 @@
 			    (firstNames (varchar 255))
 			    (lastName (varchar 50))
 			    (addressId int)
+			    (photoId int)
 			    (constraint (primary-key id))
 			    (constraint 
 			     (foreign-key (addressId)
-					  (references address id)))))
+					  (references address id)))
+			    (constraint 
+			     (foreign-key (photoId)
+					  (references photo id)))))
 	    (maquette-build-create-statement <person>))
 
 (test-equal "SQL building (select address)"
 	    '(select (id city) (from address))
 	    (maquette-build-select-statement <address> #f))
 (test-equal "SQL building (select person)"
-	    '(select (id firstNames lastName addressId) (from person))
+	    '(select (id firstNames lastName addressId photoId) (from person))
 	    (maquette-build-select-statement <person> #f))
 (test-equal "SQL building (select person 2)"
-	    '(select (id firstNames lastName addressId) (from person)
+	    '(select (id firstNames lastName addressId photoId) (from person)
 		     (where (= addressId ?)))
 	    (maquette-build-select-statement 
 	     <person> `(= address ,(make <address> :id 1))))
 (test-equal "SQL building (select person 3)"
-	    '(select (id firstNames lastName addressId) (from person)
+	    '(select (id firstNames lastName addressId photoId) (from person)
 		     (where (in addressId (? ?))))
 	    (maquette-build-select-statement 
 	     <person> `(in address 
 			   ,(make <address> :id 1)
 			   ,(make <address> :id 2))))
 (test-equal "SQL building (select person 4)"
-	    '(select (id firstNames lastName addressId) (from person)
+	    '(select (id firstNames lastName addressId photoId) (from person)
 		     (where (and (not (in addressId (? ?)))
 				 (= firstNames ?))))
 	    (maquette-build-select-statement 
@@ -60,7 +64,7 @@
 			    (= first-names "Takashi"))))
 
 (test-equal "SQL building (select person 5)"
-	    '(select (id firstNames lastName addressId) (from person)
+	    '(select (id firstNames lastName addressId photoId) (from person)
 		     (where (= addressId (select (id) (from address)
 						 (where (and (= city ?)))))))
 	    (maquette-build-select-statement 
@@ -95,8 +99,8 @@
 	      (list-queue-list queue)))
 
 (test-equal "SQL building (insert person)"
-	    '(insert-into person (id firstNames lastName addressId)
-			  (values (? ? ? ?)))
+	    '(insert-into person (id firstNames lastName addressId photoId)
+			  (values (? ? ? ? ?)))
 	    (maquette-build-insert-statement <person> '()))
 
 (test-equal "SQL building (update person)"
@@ -128,23 +132,28 @@
   (define raw-conn (maquette-connection-dbi-connection conn))
 
   ;; prepare tables
+  ;; sucks!
   (dbi-execute-using-connection! 
-   raw-conn (ssql->sql (maquette-build-create-statement <address>)))
+   raw-conn "CREATE TABLE address (id INTEGER PRIMARY KEY AUTOINCREMENT, city VARCHAR NOT NULL)")
+  (dbi-execute-using-connection! 
+   raw-conn "CREATE TABLE photo (id INTEGER PRIMARY KEY AUTOINCREMENT, data BLOB)")
   (dbi-execute-using-connection! 
    raw-conn (ssql->sql (maquette-build-create-statement <person>)))
-  (dbi-execute-using-connection! 
-   raw-conn (ssql->sql '(create-table address_seq ((id int)))))
-  ;; insert initial value
-  (dbi-execute-using-connection! 
-   raw-conn (ssql->sql '(insert-into address_seq (id) (values (0)))))
+
+  (dbi-execute-using-connection! raw-conn
+   "insert into address (id, city) values (0, 'Leiden')")
+  (dbi-execute-using-connection! raw-conn
+   "insert into sqlite_sequence (name, seq) values ('address', 0)")
+  (dbi-execute-using-connection! raw-conn
+   "insert into sqlite_sequence (name, seq) values ('photo', 0)")
 
   ;; inserts some data
   (let* ((a (make <address> :city "Leiden"))
+	 (i (make <photo> :data #vu8(1 2 3 4 5)))
 	 (p (make <person> :id 1 :first-names "Takashi"
-		  :last-name "Kato" :address a)))
+		  :last-name "Kato" :address a :photo i)))
     (test-equal "maquette-insert" 1 (maquette-insert conn p))
     (test-assert (slot-bound? a 'id))
-
     (test-equal "maquette-select 1"
 		1
 		(let ((r (maquette-select conn <person> '(= id 1))))
@@ -165,6 +174,7 @@
 		    :last-name "Kato" :address a)))
       (test-equal "maquette-insert (4)" 1 (maquette-insert conn p3)))
     )
+
   (let* ((a (make <address> :city "Den Haag"))
 	 (p (make <person> :id 3 :first-names "Takashi Bla"
 		  :last-name "Kato" :address a)))

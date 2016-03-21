@@ -98,8 +98,10 @@
   (let ((c (*current-connection*)))
     (if c
 	(proc c)
-	(call-with-available-connection (~ ctx 'pool) proc 
-					timeout timeout-value))))
+	(call-with-available-connection (~ ctx 'pool) 
+	  (lambda (conn)
+	    (parameterize ((*current-connection* conn)) (proc conn)))
+	  timeout timeout-value))))
 
 (define-syntax with-maquette-transaction
   (syntax-rules ()
@@ -108,14 +110,13 @@
        (dynamic-wind
 	   (lambda () (set! (~ c 'in-transaction?) #t))
 	   (lambda () 
-	     (call-with-available-connection (~ c 'pool)
+	     (call-with-maquette-connection c
 	       (lambda (conn) 
-		 (parameterize ((*current-connection* conn))
-		   (with-maquette-connection-transaction conn 
-		     (let ((r (begin expr ...)))
-		       ;; commit if there's no problem
-		       (maquette-connection-commit! conn)
-		       r))))))
+		 (with-maquette-connection-transaction conn 
+		   (let ((r (begin expr ...)))
+		     ;; commit if there's no problem
+		     (maquette-connection-commit! conn)
+		     r)))))
 	   (lambda () (set! (~ c 'in-transaction?) #f)))))))
 
 ;; Low level API

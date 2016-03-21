@@ -189,7 +189,13 @@
 ;;; SELECT
 (define (maquette-build-select-statement 
 	 class condition :optional (collect? #f))
-  `(select ,(map car (maquette-table-columns class))
+  (define (->column spec)
+    ;; don't load if it's lazy but we want to keep column name
+    (cond ((maquette-column-lazy? spec) `(as null ,(maquette-column-name spec)))
+	  ((or (maquette-column-one-to-many? spec)
+	       (maquette-column-many-to-many? spec)) #f)
+	  (else (maquette-column-name spec))))
+  `(select ,(filter-map ->column (maquette-table-column-specifications class))
 	   (from ,(maquette-table-name class))
 	   ,@(if condition
 		 `((where ,(build-condition class condition collect?)))
@@ -198,7 +204,7 @@
 ;; query = dbi query
 ;; this is an internal procedure to map query 
 ;; 
-(define (maquette-map-query query class delaying loaded)
+(define (maquette-map-query conn query class delaying loaded)
   (define slots (class-slots class))
   (define slot&columns
     (map (lambda (s) 
@@ -214,6 +220,27 @@
 	      ((string=? (cdar slots) col) (caar slots))
 	      (else (loop (cdr slots))))))
     (define len (vector-length columns))
+
+    (define (create-lazy obj spec slot)
+      (define color (maquette-connection-color conn))
+      (lambda ()
+	(unless (maquette-connection-in-same-session? conn color)
+	  (error 'maquette-lazy-load
+		 "Lazy loading must be done in the same session" color))
+	(let* ((primary-key (maquette-table-primary-key-specification class))
+	       (id (slot-ref obj (maquette-column-slot-name primary-key)))
+	       (stmt (maquette-connection-prepared-statement conn
+		       (ssql->sql
+			`(select (,(maquette-column-name spec))
+				 (from ,(maquette-table-name class))
+				 (where (= ,(maquette-column-name primary-key)
+					   ?))))
+		       id))
+	       (q (dbi-execute-query! stmt)))
+	  (let ((v (dbi-fetch! q)))
+	    (maquette-connection-close-statement conn q)
+	    (if v (vector-ref v 0) '())))))
+
     (let loop ((i 0))
       (if (= i len)
 	  obj ;; TODO cache if the flag is there
@@ -233,7 +260,6 @@
 				    (else
 				     (vector-set! s 1 
 						  (acons v (list obj) l))))))
-			   ;; TODO collection
 			   (else (error 'internal "unknown")))))
 		      ((and-let* ((fkey (maquette-column-foreign-key? spec))
 				  ( (not (hashtable-contains? 
@@ -242,7 +268,10 @@
 		       (lambda (key)
 			 (hashtable-set! delaying slot 
 			   (cons 'foreign `#(,key ((,v ,obj)))))))
-		      ;; TODO collections (one to many)
+		      ((maquette-column-lazy? spec)
+		       ;; now we need to make it thunk
+		       ;; NB the connection must be in the same session
+		       (slot-set! obj slot (create-lazy obj spec slot)))
 		      (else (slot-set! obj slot v)))))
 	    (loop (+ i 1))))))
 
@@ -284,7 +313,7 @@
     (guard (e (else (maquette-connection-close-statement conn stmt) (raise e)))
       (let* ((q (dbi-execute-query! stmt))
 	     (delaying (make-eq-hashtable))
-	     (r (maquette-map-query q class delaying loaded)))
+	     (r (maquette-map-query conn q class delaying loaded)))
 	;; bad design, this closes prepared statement as well
 	;; then how can we reuse it?
 	;; To fix this, we need to make all DBD implementations

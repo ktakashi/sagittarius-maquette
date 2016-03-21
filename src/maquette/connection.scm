@@ -31,6 +31,8 @@
 (library (maquette connection)
     (export make-maquette-connection maquette-connection?
 	    maquette-connection-dbi-connection
+	    maquette-connection-color
+	    maquette-connection-in-same-session?
 	    maquette-connection-connect!
 	    maquette-connection-open?
 	    maquette-connection-close!
@@ -58,6 +60,7 @@
 	    )
     (import (rnrs)
 	    (clos user)
+	    (sagittarius)
 	    (sagittarius object)
 	    (util concurrent)
 	    (srfi :18)
@@ -75,6 +78,8 @@
    (options :init-keyword :options)
    ;; cache object for statements
    (cache :init-keyword :cache :init-value #f)
+   ;; session distinguisher
+   (color :init-value #f :reader maquette-connection-color)
    ))
 (define (maquette-connection? o) (is-a? o <maquette-connection>))
 (define (make-maquette-connection dsn
@@ -91,6 +96,9 @@
 				 :max-size cache-size
 				 :comparator string-comparator
 				 :on-evict dbi-close))))
+(define (maquette-connection-in-same-session? conn color)
+  (eq? (maquette-connection-color conn) color))
+
 (define (maquette-connection-open? conn)
   (is-a? (maquette-connection-dbi-connection conn) <dbi-connection>))
 
@@ -180,7 +188,9 @@
 (define (maquette-connection-pool-get-connection cp . opt)
   (let ((r (apply shared-queue-get! (~ cp 'pool) opt)))
     (if (maquette-connection? r)
-	(maquette-connection-connect! r)
+	(begin
+	  (slot-set! r 'color (gensym)) ;; put color here
+	  (maquette-connection-connect! r))
 	r)))
 
 (define (maquette-connection-pool-return-connection cp conn)
@@ -196,6 +206,7 @@
   (unless (shared-queue-find (~ cp 'pool) (lambda (e) (eq? e conn)))
     ;; if the connection is closed, then retriever makes sure the connectivity
     ;; so simply push
+    (slot-set! conn 'color #f)
     (shared-queue-put! (~ cp 'pool) conn))
   (mutex-unlock! (~ cp 'lock))
   cp)
