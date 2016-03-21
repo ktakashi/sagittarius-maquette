@@ -12,14 +12,16 @@
 (test-equal "table-name" 'person (maquette-table-name <person>))
 (test-equal "column-names" 
 	    '((id id) (firstNames first-names) (lastName last-name)
-	      (addressId address))
+	      (addressId address)
+	      (photoId photo))
 	    (maquette-table-columns <person>))
 
 (test-equal "column-specifications" 
 	    `((id id bigint (:primary-key #t))
 	      (firstNames first-names (varchar 255))
 	      (lastName last-name (varchar 50))
-	      (addressId address int (:foreign-key (,<address> id))))
+	      (addressId address int (:foreign-key (,<address> id)))
+	      (photoId photo int (:foreign-key (,<photo> id))))
 	    (maquette-table-column-specifications <person>))
 
 (test-equal "lookup column-name (first-names)" 'firstNames
