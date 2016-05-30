@@ -35,7 +35,7 @@
  ((library (dbd sqlite3))
   (when (file-exists? db-file) (delete-file db-file))
 
-  (define ctx (make-maquette-context dsn :auto-commit #f))
+  (define ctx (make-maquette-context dsn :auto-commit #f :cache-type #f))
   ;; create tables for test
   (call-with-maquette-connection ctx
     (lambda (mc)

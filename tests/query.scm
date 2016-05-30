@@ -138,7 +138,9 @@
 
   (define conn (open-maquette-connection
 		(format "dbi:sqlite3:database=~a" db-file)
-		:auto-commit #t))
+		:auto-commit #t
+		;; for SQLite3
+		:cache-type #f))
   (define raw-conn (maquette-connection-dbi-connection conn))
 
   ;; prepare tables
