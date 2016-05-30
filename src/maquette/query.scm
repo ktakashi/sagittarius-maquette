@@ -166,7 +166,11 @@
 
 	  (else (when collect? (list-queue-add-back! collect? slot/val)) '?)))
   (case (car condition)
-    ((= <> < >) => (lambda (t) (cons t (map ->ssql (cdr condition)))))
+    ((= <> < > <= >=) => (lambda (t) (cons t (map ->ssql (cdr condition)))))
+    ((between)
+     (let ((col (cadr condition)))
+       (build-condition class `(and (<= ,col ,(caddr condition))
+				    (<= ,(cadddr condition) ,col)) collect?)))
     ((in) 
      ;; in needs special treatment if condition value is sub query
      (let ((col (->ssql (cadr condition)))

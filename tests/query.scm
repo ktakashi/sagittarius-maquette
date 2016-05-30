@@ -65,6 +65,16 @@
 
 (test-equal "SQL building (select person 5)"
 	    '(select (id firstNames lastName addressId photoId) (from person)
+		     (where (and (<= firstNames ?)
+				 (>= firstNames ?)
+				 (and (<= firstNames ?) (<= ? firstNames)))))
+	    (maquette-build-select-statement 
+	     <person> `(and (<= first-names "Takashi")
+			    (>= first-names "Takashi")
+			    (between first-names "Takashi" "Takashi"))))
+
+(test-equal "SQL building (select person 5)"
+	    '(select (id firstNames lastName addressId photoId) (from person)
 		     (where (= addressId (select (id) (from address)
 						 (where (and (= city ?)))))))
 	    (maquette-build-select-statement 
