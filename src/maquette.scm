@@ -36,6 +36,7 @@
 
 	    maquette-query
 	    maquette-save
+	    maquette-add
 	    maquette-remove
 
 	    with-maquette-transaction
@@ -91,6 +92,12 @@
 		   ":on-update must be 'optimistic or 'conservative"
 		   on-update)))
 	  (maquette-insert conn obj))
+      obj)))
+
+(define (maquette-add ctx obj)
+  (call-with-maquette-connection ctx
+    (lambda (conn)
+      (maquette-insert conn obj)
       obj)))
 
 ;; TODO should we check the primary key slot for safety?
