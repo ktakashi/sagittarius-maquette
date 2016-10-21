@@ -81,13 +81,6 @@
    ;; session distinguisher
    (color :init-value #f :reader maquette-connection-color)
    ))
-
-(define statement-comparator
-  (make-comparator #t
-    (lambda (a b) (and (eq? (car a) (car b)) (string=? (cdr a) (cdr b))))
-    #f
-    equal-hash))
-
 (define (maquette-connection? o) (is-a? o <maquette-connection>))
 (define (make-maquette-connection dsn
 				  :key (cache-type <lru-cache>)
@@ -101,7 +94,7 @@
   (make <maquette-connection> :dsn dsn :options opt 
 	:cache (and cache-type (make cache-type
 				 :max-size cache-size
-				 :comparator statement-comparator
+				 :comparator string-comparator
 				 :on-evict dbi-close))))
 (define (maquette-connection-in-same-session? conn color)
   (eq? (maquette-connection-color conn) color))
@@ -145,12 +138,12 @@
     (assertion-violation 'maquette-connection-prepared-statement
 			 "connection is closed" c))
   (let* ((cache (~ c 'cache))
-	 (stmt (cond ((and cache (cache-get cache (cons c sql))))
+	 (stmt (cond ((and cache (cache-get cache sql)))
 		     (else
 		      (let ((stmt (dbi-prepare 
 				   (maquette-connection-dbi-connection c)
 				   sql)))
-			(when cache (cache-put! cache (cons c sql) stmt))
+			(when cache (cache-put! cache sql stmt))
 			stmt)))))
     (let loop ((i 1) (ps opt))
       (unless (null? ps)
