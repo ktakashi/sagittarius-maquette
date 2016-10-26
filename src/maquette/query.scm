@@ -51,6 +51,8 @@
 	    (dbi)
 	    (maquette tables)
 	    (maquette connection)
+	    (maquette query builders)
+	    (maquette query helper)
 	    (util hashtables)
 	    (text sql)
 	    (match)
@@ -58,156 +60,11 @@
 	    (srfi :26)
 	    (srfi :117))
 
-;;; CREATE
-;; more for testing
-(define (maquette-build-create-statement class)
-  (define specification (maquette-table-column-specifications class))
-  (define (parse-spec specification)
-    
-    (let loop ((specification specification) 
-	       (columns '()) 
-	       (constraints '()))
-      (if (null? specification)
-	  (values (reverse! columns) (reverse! constraints))
-	  (let ((spec (car specification)))
-	    (if (or (maquette-column-one-to-many? spec)
-		    (maquette-column-many-to-many? spec))
-		(loop (cdr specification) columns constraints)
-		(let ((primary-key (maquette-column-primary-key? spec))
-		      (foreign-key (maquette-column-foreign-key? spec))
-		      (not-null (maquette-column-not-null? spec))
-		      (unique (maquette-column-unique? spec))
-		      (default (maquette-column-default? spec))
-		      (col (maquette-column-name spec))
-		      (type (maquette-column-type spec)))
-		  (define (build-foreign-key spec)
-		    (let ((class (car spec))
-			  (key (cadr spec)))
-		      `((constraint
-			 (foreign-key (,col)
-				      (references ,(maquette-table-name class)
-						  ,(maquette-lookup-column-name
-						    class key)))))))
-		  (loop (cdr specification)
-			(cons `(,col 
-				,type
-				,@(if not-null '((constraint not-null)) '())
-				,@(if default default '()))
-			      columns)
-			`(,@(if primary-key 
-				      `((constraint (primary-key ,col))) 
-				      '())
-			  ,@(if foreign-key
-				(build-foreign-key foreign-key)
-				'())
-			  ,@(if unique 
-				`((constraint (unique ,col)))
-				'())
-			  ,@constraints))))))))
-  (let-values (((col constraints) (parse-spec specification)))
-    `(create-table 
-      ,(maquette-table-name class)
-      (,@col
-       ,@constraints))))
 
-;; condition must be either #f or a list of the following
-;; expression := condition | (or condition ...) | (and condition ...)
-;; condition  := (= lhs rhs) | (<> lhs rhs) | < and > ...
-;;             | (not expression)
-;;             | (or expression ...)
-;;             | (and expression ...)
-;; utility this can be used for select, update and delete
-
-;; class = table class
-;; condition = see above 
-;; collect? = #f or list-queue
-(define (build-condition class condition collect?)
-  (define (->ssql slot/val)
-    (cond ((symbol? slot/val)
-	   (or (maquette-lookup-column-name class slot/val) slot/val))
-	  ((is-a? (class-of slot/val) <maquette-table-meta>)
-	   ;; TODO we need to walk through the object and build sub query
-	   ;;      if primary key isn't set.
-	   (let* ((ocls (class-of slot/val))
-		  (spec (maquette-table-primary-key-specification ocls)))
-	     (define (slot->condition slot)
-	       (let ((n (slot-definition-name slot)))
-		 (and (slot-bound? slot/val n)
-		    (let ((col (maquette-lookup-column-name ocls n)))
-		      (when collect?
-			(list-queue-add-back! collect? (slot-ref slot/val n)))
-		      `(= ,col ?)))))
-	     
-	     (cond ((slot-bound? slot/val (cadr spec))
-		    (when collect?
-		      ;; get primary key
-		      (list-queue-add-back! collect?
-					    (slot-ref slot/val (cadr spec))))
-		    '?)
-		   ;; ok build sub query
-		   ;; TODO multiple column unique key handling
-		   ((and-let* ((unique (maquette-find-column-specification 
-					class maquette-column-unique?))
-			       ( (slot-bound? slot/val (cadr unique)) ))
-		      unique) =>
-		      (lambda (unique)
-			(when collect? 
-			  (list-queue-add-back! collect? 
-			   (slot-ref slot/val (cadr unique))))
-		       `(select (,(car spec)) (from ,(maquette-table-name ocls))
-				(where (= ,(car unique) ?)))))
-		   (else
-		    ;; ok we need to construct query of bound slots
-		    `(select (,(car spec)) (from ,(maquette-table-name ocls))
-			     (where (and ,@(filter-map slot->condition 
-					    (class-slots ocls)))))))))
-		    
-		 
-
-	  (else (when collect? (list-queue-add-back! collect? slot/val)) '?)))
-  (case (car condition)
-    ((= <> < > <= >=) => (lambda (t) (cons t (map ->ssql (cdr condition)))))
-    ((between)
-     (let ((col (cadr condition)))
-       (build-condition class `(and (<= ,col ,(caddr condition))
-				    (<= ,(cadddr condition) ,col)) collect?)))
-    ((in) 
-     ;; in needs special treatment if condition value is sub query
-     (let ((col (->ssql (cadr condition)))
-	   (val (map ->ssql (cddr condition))))
-       (let-values (((replacements sub-queries)
-		     (partition (lambda (x) (eq? '? x)) val)))
-	 (if (null? sub-queries)
-	     (list 'in col val)
-	     `(and ,@(if (null? replacements)
-			 '()
-			 `((in ,col ,replacements)))
-		   ,@(map (lambda (sub) `(in ,col ,sub)) sub-queries))))))
-    ((not) `(not ,(build-condition class (cadr condition) collect?)))
-    ((or and) =>
-     (lambda (t)
-       `(,t ,@(map (cut build-condition class <> collect?) (cdr condition)))))
-    (else (error 'maquette-build-select-statement "unknown expression"
-		 condition))))
-
-;;; SELECT
-(define (maquette-build-select-statement 
-	 class condition :optional (collect? #f))
-  (define (->column spec)
-    ;; don't load if it's lazy but we want to keep column name
-    (cond ((maquette-column-lazy? spec) `(as null ,(maquette-column-name spec)))
-	  ((or (maquette-column-one-to-many? spec)
-	       (maquette-column-many-to-many? spec)) #f)
-	  (else (maquette-column-name spec))))
-  `(select ,(filter-map ->column (maquette-table-column-specifications class))
-	   (from ,(maquette-table-name class))
-	   ,@(if condition
-		 `((where ,(build-condition class condition collect?)))
-		 '())))
-
+(define (list-queue-value-handler queue)
+  (lambda (value) (list-queue-add-back! queue value)))
 ;; query = dbi query
 ;; this is an internal procedure to map query 
-;; 
 (define (maquette-map-query conn query class delaying loaded)
   (define slots (class-slots class))
   (define slot&columns
@@ -310,7 +167,8 @@
 	    (loop (cdr r))))))
   ;; TODO maybe we want to do caching prepared statement?
   (let* ((queue (if condition (list-queue) #f))
-	 (ssql (maquette-build-select-statement class condition queue))
+	 (handler (list-queue-value-handler queue))
+	 (ssql (maquette-build-select-statement class condition handler))
 	 (stmt (apply maquette-connection-prepared-statement
 		      conn (ssql->sql ssql)
 		      (if queue (list-queue-list queue) '()))))
@@ -363,20 +221,10 @@
 		  )))
 	r))))
 
+;;; SELECT
 (define (maquette-select conn class :optional (condition #f))
   (maquette-select-inner conn class condition (make-equal-hashtable)))
 
-(define (find-foreign-key target this)
-  (define specs (maquette-table-column-specifications target))
-  (let loop ((specs specs))
-    (if (null? specs)
-	(error 'maquette-insert 
-	       "class referred by :one-to-many keyword must have :foreign-key"
-	       target)
-	(cond ((and-let* ((fkey (maquette-column-foreign-key? (car specs)))
-			  ( (eq? (car fkey) this)))
-		 (maquette-column-slot-name (car specs))))
-	      (else (loop (cdr specs)))))))
 ;;; INSERT
 (define (maquette-generator expression)
   (define sqls 
@@ -398,13 +246,6 @@
 	    (dbi-execute-using-connection! dbi-conn (car sqls))
 	    (loop (cdr sqls)))))))
 
-(define (maquette-build-insert-statement class columns)
-  (let ((cols (if (null? columns)
-		  (map car (maquette-table-columns class))
-		  columns)))
-    `(insert-into ,(maquette-table-name class)
-		  ,cols
-		  (values ,(list-tabulate (length cols) (lambda (i) '?))))))
 ;; insertion can be done with object without class.
 (define (maquette-insert conn object)
   (define class (class-of object))
@@ -499,15 +340,8 @@
 	(for-each (cut maquette-insert conn <>) (list-queue-list queue)))
       r)))
 
-;;; UPDATE
-(define (maquette-build-update-statement class columns condiiton 
-					 :optional (collect? #f))
-  `(update ,(maquette-table-name class)
-	   (set! ,@(map (lambda (col) `(= ,col ?)) columns))
-	   ,@(if condiiton 
-		 `((where ,(build-condition class condiiton collect?)))
-		 '())))
 
+;; UPDATE
 (define (maquette-update conn object) 
   (define class (class-of object))
   (define primary-key (maquette-table-primary-key-specification class))
@@ -553,10 +387,12 @@
 			  `(= ,slot ,(slot-ref o slot))))
 		   (map slot-definition-name (class-slots class)))))))
   (let* ((value (list-queue))
+	 (handler (list-queue-value-handler value))
 	 (one-to-many (list-queue))
 	 (columns (collect-columns object value one-to-many))
 	 (condition (create-condition object))
-	 (ssql (maquette-build-update-statement class columns condition value))
+	 (ssql (maquette-build-update-statement class columns
+						condition handler))
 	 (stmt (apply maquette-connection-prepared-statement
 		      conn (ssql->sql ssql) 
 		      (list-queue-list value))))
@@ -566,13 +402,6 @@
       r)))
 
 ;;; DELETE
-(define (maquette-build-delete-statement class condition
-					 :optional (collect? #f))
-  `(delete-from ,(maquette-table-name class)
-		,@(if condition
-		      `((where ,(build-condition class condition collect?)))
-		      '())))
-
 (define (maquette-delete conn object :key (cascade? #f))
   (define class (class-of object))
   (define primary-key (maquette-table-primary-key-specification class))
@@ -610,8 +439,9 @@
 	(loop (cdr specs)))))
 
   (let* ((value (list-queue))
+	 (handler (list-queue-value-handler value))
 	 (condition (create-condition object))
-	 (ssql (maquette-build-delete-statement class condition value))
+	 (ssql (maquette-build-delete-statement class condition handler))
 	 (stmt (apply maquette-connection-prepared-statement
 		      conn (ssql->sql ssql) 
 		      (list-queue-list value))))

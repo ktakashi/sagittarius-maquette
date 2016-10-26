@@ -80,6 +80,8 @@
 	    (maquette-build-select-statement 
 	     <person> `(= address ,(make <address> :city "Leiden"))))
 
+(define (list-queue-value-handler q)
+  (lambda (v) (list-queue-add-back! q v)))
 (test-equal "SQL building (select collect)"
 	    '(1 2)
 	    (let ((queue (list-queue)))
@@ -87,7 +89,7 @@
 	       <person> `(in address 
 			     ,(make <address> :id 1)
 			     ,(make <address> :id 2))
-	       queue)
+	       (list-queue-value-handler queue))
 	      (list-queue-list queue)))
 (test-equal "SQL building (select collect 2)"
 	    '(1 2 "Takashi")
@@ -97,7 +99,7 @@
 				       ,(make <address> :id 1)
 				       ,(make <address> :id 2)))
 			      (= first-names "Takashi"))
-	       queue)
+	       (list-queue-value-handler queue))
 	      (list-queue-list queue)))
 
 (test-equal "SQL building (select collect 3)"
@@ -105,7 +107,7 @@
 	    (let ((queue (list-queue)))
 	      (maquette-build-select-statement 
 	       <person> `(= address ,(make <address> :city "Leiden"))
-	       queue)
+	       (list-queue-value-handler queue))
 	      (list-queue-list queue)))
 
 (test-equal "SQL building (insert person)"
