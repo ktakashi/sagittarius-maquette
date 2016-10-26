@@ -58,6 +58,7 @@
 	    (match)
 	    (srfi :1)
 	    (srfi :26)
+	    (srfi :45) ;; avoid to use (scheme lazy)...
 	    (srfi :117))
 
 
@@ -65,13 +66,13 @@
   (lambda (value) (list-queue-add-back! queue value)))
 ;; query = dbi query
 ;; this is an internal procedure to map query 
-(define (maquette-map-query conn query class delaying loaded)
-  (define slots (class-slots class))
+(define (maquette-map-query conn query class loaded)
+  (define delaying (make-eq-hashtable))
   (define slot&columns
     (map (lambda (s) 
 	   (cons (slot-definition-name s)
 		 (string-foldcase (slot-definition-option s :column-name ""))))
-	 slots))
+	 (class-slots class)))
 
   (define (map-query1 columns q obj)
     (define (find-slot i)
@@ -80,69 +81,70 @@
 	(cond ((null? slots) (string->symbol col)) ;; default
 	      ((string=? (cdar slots) col) (caar slots))
 	      (else (loop (cdr slots))))))
-    (define len (vector-length columns))
-
+    
     (define (create-lazy obj spec slot)
       (define color (maquette-connection-color conn))
-      (lambda ()
-	(unless (maquette-connection-in-same-session? conn color)
-	  (error 'maquette-lazy-load
-		 "Lazy loading must be done in the same session" color))
-	(let* ((primary-key (maquette-table-primary-key-specification class))
-	       (id (slot-ref obj (maquette-column-slot-name primary-key)))
-	       (stmt (maquette-connection-prepared-statement conn
+      (lazy
+       (begin
+	 (unless (maquette-connection-in-same-session? conn color)
+	   (error 'maquette-lazy-load
+		  "Lazy loading must be done in the same session" color))
+	 (let* ((primary-key (maquette-table-primary-key-specification class))
+		(id (slot-ref obj (maquette-column-slot-name primary-key)))
+		(stmt (maquette-connection-prepared-statement conn
 		       (ssql->sql
 			`(select (,(maquette-column-name spec))
 				 (from ,(maquette-table-name class))
 				 (where (= ,(maquette-column-name primary-key)
 					   ?))))
 		       id))
-	       (q (dbi-execute-query! stmt)))
-	  (let ((v (dbi-fetch! q)))
-	    (maquette-connection-close-statement conn q)
-	    (if v (vector-ref v 0) '())))))
+		(q (dbi-execute-query! stmt)))
+	   (let ((v (dbi-fetch! q)))
+	     (maquette-connection-close-statement conn q)
+	     (if v (vector-ref v 0) '()))))))
+    ;; the foreign key of these objects are resolved later
+    (define (push-delaying-object! delayed v)
+      (case (car delayed)
+	((foreign)
+	 (let* ((s (cdr delayed))
+		(l (vector-ref s 1)))
+	   (cond ((assoc v l) =>
+		  (lambda (slot)
+		    (set-cdr! slot (cons obj (cdr slot)))))
+		 (else
+		  (vector-set! s 1 
+			       (acons v (list obj) l))))))
+	(else (error 'internal "unknown"))))
 
-    (let loop ((i 0))
-      (if (= i len)
-	  obj ;; TODO cache if the flag is there
-	  (let ((slot (find-slot i)))
-	    (when (slot-exists? obj slot)
-	      (let ((spec (maquette-lookup-column-specification class slot))
-		    (v (vector-ref q i)))
-		(cond ((hashtable-ref delaying slot #f) =>
-		       (lambda (delayed)
-			 (case (car delayed)
-			   ((foreign)
-			    (let* ((s (cdr delayed))
-				   (l (vector-ref s 1)))
-			      (cond ((assoc v l) =>
-				     (lambda (slot)
-				       (set-cdr! slot (cons obj (cdr slot)))))
-				    (else
-				     (vector-set! s 1 
-						  (acons v (list obj) l))))))
-			   (else (error 'internal "unknown")))))
-		      ((and-let* ((fkey (maquette-column-foreign-key? spec))
-				  ( (not (hashtable-contains? 
-					  loaded (list (car fkey) v)))))
-			 fkey)=> 
-		       (lambda (key)
-			 (hashtable-set! delaying slot 
-			   (cons 'foreign `#(,key ((,v ,obj)))))))
-		      ((maquette-column-lazy? spec)
-		       ;; now we need to make it thunk
-		       ;; NB the connection must be in the same session
-		       (slot-set! obj slot (create-lazy obj spec slot)))
-		      (else (slot-set! obj slot v)))))
-	    (loop (+ i 1))))))
+    (define (non-loaded-foreign-key? spec v)
+      (and-let* ((fkey (maquette-column-foreign-key? spec))
+		 (c (maquette-foreign-key-class fkey))
+		 ( (not (hashtable-contains? loaded (list c v))) ))
+	fkey))
+
+    (dotimes (i (vector-length columns) obj)
+      (and-let* ((slot (find-slot i))
+		 ( (slot-exists? obj slot) ))
+	(let ((spec (maquette-lookup-column-specification class slot))
+	      (v (vector-ref q i)))
+	  (cond ((hashtable-ref delaying slot #f) =>
+		 (cut push-delaying-object! <> v))
+		((non-loaded-foreign-key? spec v) =>
+		 ;; set to delaying
+		 (lambda (key)
+		   (hashtable-set! delaying slot 
+				   (cons 'foreign `#(,key ((,v ,obj)))))))
+		((maquette-column-lazy? spec)
+		 ;; now we need to make it promise
+		 ;; NB the connection must be in the same session
+		 (slot-set! obj slot (create-lazy obj spec slot)))
+		(else (slot-set! obj slot v)))))))
 
   ;; assume columns are mapped to query result properly
-  (let* ((columns (vector-map string-foldcase (dbi-columns query))))
-    (let loop ((q (dbi-fetch! query)) (r '()))
-      (if q
-	  (let ((obj (make class)))
-	    (loop (dbi-fetch! query) (cons (map-query1 columns q obj) r)))
-	  (reverse! r)))))
+  (let ((columns (vector-map string-foldcase (dbi-columns query))))
+    (values
+     (dbi-query-map query (lambda (q) (map-query1 columns q (make class))))
+     delaying)))
 
 (define (maquette-select-inner conn class condition loaded)
   (define primary-key (maquette-table-primary-key-specification class))
@@ -150,22 +152,53 @@
   (define (handle-foreign-key this-slot value)
     (let* ((key (vector-ref value 0))
 	   (values  (vector-ref value 1))
-	   (slot (cadr key))
+	   (slot (maquette-foreign-key-slot-name key))
 	   (v* (map car values)))
-      (let loop ((r (maquette-select-inner conn (car key) 
-					   `(in ,slot ,@v*) loaded)))
-	  (unless (null? r)
-	    (let* ((o (car r))
-		   (id (slot-ref o slot)))
-	      ;; never heard of foreign key or primary key to be non
-	      ;; number but just in case.
-	      (cond ((assoc id values) =>
-		     (lambda (slot) 
-		       (for-each (lambda (this)
-				   (slot-set! this this-slot o))
-				 (cdr slot))))))
-	    (loop (cdr r))))))
-  ;; TODO maybe we want to do caching prepared statement?
+      (dolist (o (maquette-select-inner conn (maquette-foreign-key-class key)
+					`(in ,slot ,@v*) loaded))
+	(let ((id (slot-ref o slot)))
+	  ;; never heard of foreign key or primary key to be non
+	  ;; number but just in case.
+	  (cond ((assoc id values) =>
+		 (lambda (fkey-id&objs) 
+		   (for-each (lambda (this) (slot-set! this this-slot o))
+			     (cdr fkey-id&objs)))))))))
+
+  (define (handle-foreign-keys delayed)
+    (hashtable-for-each (lambda (slot value)
+			  (case (car value)
+			    ((foreign) 
+			     (handle-foreign-key slot (cdr value)))
+			    (else (error 'maquette-select "unknown"))))
+			delayed))
+  
+  (define (handle-collections r)
+    (define (construct-condition fkey pslot)
+      `(in ,fkey
+	   ,@(map (lambda (this) 
+		    (let ((id (slot-ref this pslot)))
+		      (hashtable-set! loaded (list class id) #f)
+		      id)) r)))
+
+    (dolist (spec (maquette-table-column-specifications class))
+      (cond ((maquette-column-one-to-many? spec) =>
+	     (lambda (other)
+	       (define pslot (maquette-column-slot-name primary-key))
+	       (let* ((fkey (find-foreign-key other class))
+		      (c (maquette-select-inner conn other
+						(construct-condition fkey pslot)
+						loaded)))
+		 (define (foreign? r id) (and (equal? (slot-ref r fkey) id) r))
+		 ;; foreign key slot is mere number (or something else
+		 ;; but object)
+		 (dolist (this r)
+		   (let ((id (slot-ref this pslot)))
+		     (slot-set! this
+				(maquette-column-slot-name spec)
+				(filter-map (cut foreign? <> id) c)))))))
+	    ;; TODO many-to-one
+	    )))
+
   (let* ((queue (if condition (list-queue) #f))
 	 (handler (list-queue-value-handler queue))
 	 (ssql (maquette-build-select-statement class condition handler))
@@ -173,52 +206,16 @@
 		      conn (ssql->sql ssql)
 		      (if queue (list-queue-list queue) '()))))
     (guard (e (else (maquette-connection-close-statement conn stmt) (raise e)))
-      (let* ((q (dbi-execute-query! stmt))
-	     (delaying (make-eq-hashtable))
-	     (r (maquette-map-query conn q class delaying loaded)))
+      (let ((q (dbi-execute-query! stmt)))
+	(define-values (r delayed) (maquette-map-query conn q class loaded))
 	;; bad design, this closes prepared statement as well
 	;; then how can we reuse it?
 	;; To fix this, we need to make all DBD implementations
 	;; not to close prepared statement.
-	(maquette-connection-close-statement conn q)
-
 	;; now mapping foreign keys
-	(hashtable-for-each
-	 (lambda (slot value)
-	   (case (car value)
-	     ((foreign) 
-	      (handle-foreign-key slot (cdr value)))
-	     (else (error 'maquette-select "unknown"))))
-	 delaying)
-
+	(handle-foreign-keys delayed)
 	;; handling collection if there is
-	(unless (null? r)
-	  (dolist (spec (maquette-table-column-specifications class))
-	    (cond ((maquette-column-one-to-many? spec) =>
-		   (lambda (other)
-		     (define pslot (maquette-column-slot-name primary-key))
-		     (let* ((fkey (find-foreign-key other class))
-			    (c (maquette-select-inner conn other
-				 `(in ,fkey
-				      ,@(map (lambda (this) 
-					       (let ((id (slot-ref this pslot)))
-						 (hashtable-set! 
-						  loaded (list class id) #t)
-						 id)) r))
-				 loaded)))
-		       ;; foreign key slot is mere number (or something else
-		       ;; but object)
-		       (dolist (this r)
-			 (let ((id (slot-ref this pslot)))
-			   (slot-set! this
-				      (maquette-column-slot-name spec)
-				      (filter-map (lambda (r)
-						    (and (= (slot-ref r fkey)
-							    id)
-							 r))
-						  c)))))))
-		  ;; TODO many-to-one
-		  )))
+	(unless (null? r) (handle-collections r))
 	r))))
 
 ;;; SELECT

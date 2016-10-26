@@ -37,7 +37,7 @@
 	  (srfi :1 lists)
 	  (srfi :2 and-let*))
 
-;; Find foreign key
+;; Find foreign key slot name
 (define (find-foreign-key target this)
   (define specs (maquette-table-column-specifications target))
   (let loop ((specs specs))
@@ -46,7 +46,7 @@
 	       "class referred by :one-to-many keyword must have :foreign-key"
 	       target)
 	(cond ((and-let* ((fkey (maquette-column-foreign-key? (car specs)))
-			  ( (eq? (car fkey) this)))
+			  ( (eq? (maquette-foreign-key-class fkey) this)))
 		 (maquette-column-slot-name (car specs))))
 	      (else (loop (cdr specs)))))))
   )

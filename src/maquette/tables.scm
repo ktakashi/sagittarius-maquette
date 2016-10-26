@@ -51,8 +51,12 @@
 	    maquette-column-one-to-many?
 	    maquette-column-many-to-many?
 	    maquette-column-lazy?
+	    
+	    maquette-foreign-key-class
+	    maquette-foreign-key-slot-name
 	    )
     (import (rnrs)
+	    (rnrs r5rs)
 	    (sagittarius)
 	    (srfi :1)
 	    (srfi :26)
@@ -79,19 +83,8 @@
 	(name (slot-definition-name slot)))
     (if lazy?
 	(let ((getter (or (car r)
-			  (lambda (o)
-			    (slot-ref-using-class class o name))))
-	      (setter (or (cadr r) 
-			  (lambda (o v)
-			    (slot-set-using-class! class o name v)))))
-	  (cons (lambda (o)
-		  (let ((v (getter o)))
-		    (if (procedure? v) 
-			(let ((r (v)))
-			  (setter o r)
-			  r)
-			v)))
-		(cdr r)))
+			  (lambda (o) (slot-ref-using-class class o name)))))
+	  (cons (lambda (o) (force (getter o))) (cdr r)))
 	r)))
 (define (strip<> sym)
   (let* ((s (symbol->string sym))
@@ -215,4 +208,7 @@
       (and-let* ((spec (find-primary-spec)))
 	(slot-set! class 'primary-key spec)
 	spec)))
+
+(define (maquette-foreign-key-class fkey) (car fkey))
+(define (maquette-foreign-key-slot-name fkey) (cadr fkey))
 )

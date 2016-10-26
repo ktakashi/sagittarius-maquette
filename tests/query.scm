@@ -175,6 +175,8 @@
 		  (test-assert "person?" (is-a? (car r) <person>))
 		  (test-assert "address?" (is-a? (slot-ref (car r) 'address)
 						 <address>))
+		  (test-assert "photo?" (is-a? (slot-ref (car r) 'photo)
+					       <photo>))
 		  (length r)))
     (let* ((a2 (make <address> :city "Leiden"))
 	   (p2 (make <person> :id 2 :first-names "Takashi Bla"
@@ -193,7 +195,6 @@
 	 (p (make <person> :id 3 :first-names "Takashi Bla"
 		  :last-name "Kato" :address a)))
     (test-equal "maquette-insert (3)" 1 (maquette-insert conn p)))
-  
   (test-equal "maquette-select (all)" 4
 	      (length (maquette-select conn <person>)))
   (test-equal "maquette-select (sub querying)" 3
