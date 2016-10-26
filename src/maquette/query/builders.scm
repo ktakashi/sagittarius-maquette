@@ -149,43 +149,53 @@
 ;; condition = see above 
 ;; value-handler = procedure take one argument
 (define (build-condition class condition value-handler)
+  (define (meta? v)
+    (let ((c (class-of v)))
+      (and (is-a? c <maquette-table-meta>) c)))
+  
+  (define (unique? class slot/val)
+    (and-let* ((unique (maquette-find-column-specification 
+			class maquette-column-unique?))
+	       (slot-name (maquette-column-slot-name unique))
+	       ( (slot-bound? slot/val slot-name) ))
+      unique))
+  
+  (define (class->ssql ocls slot/val)
+    (define (slot->condition slot)
+      (let ((n (slot-definition-name slot)))
+	(and (slot-bound? slot/val n)
+	     (let ((col (maquette-lookup-column-name ocls n)))
+	       (value-handler (slot-ref slot/val n))
+	       `(= ,col ?)))))
+    
+    (let* ((spec (maquette-table-primary-key-specification ocls))
+	   (column-name (maquette-column-name spec))
+	   (slot-name (maquette-column-slot-name spec)))
+      (cond ((slot-bound? slot/val slot-name)
+	     (value-handler (slot-ref slot/val slot-name))
+	     '?)
+	    ;; ok build sub query
+	    ;; TODO multiple column unique key handling
+	    ((unique? class slot/val) =>
+	     (lambda (unique)
+	       (define unique-column (maquette-column-name unique))
+	       (define unique-slot (maquette-column-slot-name unique))
+	       (value-handler (slot-ref slot/val unique-slot))
+	       `(select (,column-name) (from ,(maquette-table-name ocls))
+			(where (= ,unique-column ?)))))
+	    (else
+	     ;; ok we need to construct query of bound slots
+	     `(select (,column-name)
+		      (from ,(maquette-table-name ocls))
+		      (where (and ,@(filter-map slot->condition
+						(class-slots ocls)))))))))
+  
   (define (->ssql slot/val)
     (cond ((symbol? slot/val)
 	   (or (maquette-lookup-column-name class slot/val) slot/val))
-	  ((is-a? (class-of slot/val) <maquette-table-meta>)
-	   ;; TODO we need to walk through the object and build sub query
-	   ;;      if primary key isn't set.
-	   (let* ((ocls (class-of slot/val))
-		  (spec (maquette-table-primary-key-specification ocls)))
-	     (define (slot->condition slot)
-	       (let ((n (slot-definition-name slot)))
-		 (and (slot-bound? slot/val n)
-		    (let ((col (maquette-lookup-column-name ocls n)))
-		      (value-handler (slot-ref slot/val n))
-		      `(= ,col ?)))))
-	     
-	     (cond ((slot-bound? slot/val (cadr spec))
-		    (value-handler (slot-ref slot/val (cadr spec)))
-		    '?)
-		   ;; ok build sub query
-		   ;; TODO multiple column unique key handling
-		   ((and-let* ((unique (maquette-find-column-specification 
-					class maquette-column-unique?))
-			       ( (slot-bound? slot/val (cadr unique)) ))
-		      unique) =>
-		      (lambda (unique)
-			(value-handler (slot-ref slot/val (cadr unique)))
-		       `(select (,(car spec)) (from ,(maquette-table-name ocls))
-				(where (= ,(car unique) ?)))))
-		   (else
-		    ;; ok we need to construct query of bound slots
-		    `(select (,(car spec)) (from ,(maquette-table-name ocls))
-			     (where (and ,@(filter-map slot->condition 
-					    (class-slots ocls)))))))))
-		    
-		 
-
+	  ((meta? slot/val) => (cut class->ssql <> slot/val))
 	  (else (value-handler slot/val) '?)))
+
   (case (car condition)
     ((= <> < > <= >=) => (lambda (t) (cons t (map ->ssql (cdr condition)))))
     ((between)
