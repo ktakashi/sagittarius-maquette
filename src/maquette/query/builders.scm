@@ -111,17 +111,16 @@
 		 '())))
 
 ;;; INSERT
-(define (maquette-build-insert-statement class columns)
-  (let ((cols (if (null? columns)
-		  (map car (maquette-table-columns class))
-		  columns)))
+(define (maquette-build-insert-statement class :optional (columns #f))
+  (let ((cols (or columns (map car (maquette-table-columns class)))))
     `(insert-into ,(maquette-table-name class)
 		  ,cols
 		  (values ,(list-tabulate (length cols) (lambda (i) '?))))))
 
 ;;; UPDATE
-(define (maquette-build-update-statement class columns condiiton 
-					 :optional (value-handler values))
+(define (maquette-build-update-statement class columns
+					 :optional (condiiton #f)
+						   (value-handler values))
   `(update ,(maquette-table-name class)
 	   (set! ,@(map (lambda (col) `(= ,col ?)) columns))
 	   ,@(if condiiton 
@@ -129,8 +128,8 @@
 		 '())))
 
 ;;; DELETE
-(define (maquette-build-delete-statement class condition
-					 :optional (value-handler values))
+(define (maquette-build-delete-statement class :optional (condition #f)
+							 (value-handler values))
   `(delete-from ,(maquette-table-name class)
     ,@(if condition
 	  `((where ,(build-condition class condition value-handler)))
