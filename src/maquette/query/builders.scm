@@ -96,8 +96,8 @@
        ,@constraints))))
 
 ;;; SELECT
-(define (maquette-build-select-statement class condition
-					 :optional (value-handler values))
+(define (maquette-build-select-statement class :optional (condition #f)
+							 (value-handler values))
   (define (->column spec)
     ;; don't load if it's lazy but we want to keep column name
     (cond ((maquette-column-lazy? spec) `(as null ,(maquette-column-name spec)))
